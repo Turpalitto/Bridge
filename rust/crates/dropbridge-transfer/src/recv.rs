@@ -179,9 +179,54 @@ impl ReceiverEngine {
                 });
             }
 
+            let (size, part_path) = {
+                let Some(f) = self.files.get(&h.file_id) else {
+                    return Err(RecvError::OutOfBounds {
+                        file: h.file_id,
+                        offset: h.offset,
+                        len: h.len as u64,
+                        size: 0,
+                    });
+                };
+                (f.entry.size, f.part_path.clone())
+            };
+
+            let expected_payload_len = if h.is_compressed {
+                if h.uncompressed_len == 0
+                    || h.uncompressed_len as usize > crate::compression::MAX_DECOMPRESSED_CHUNK_SIZE
+                {
+                    return Err(RecvError::OutOfBounds {
+                        file: h.file_id,
+                        offset: h.offset,
+                        len: h.uncompressed_len as u64,
+                        size,
+                    });
+                }
+                h.uncompressed_len as usize
+            } else {
+                chunk.data.len()
+            };
+
+            let end = h.offset.checked_add(expected_payload_len as u64).ok_or(
+                RecvError::OutOfBounds {
+                    file: h.file_id,
+                    offset: h.offset,
+                    len: expected_payload_len as u64,
+                    size,
+                },
+            )?;
+            if end > size {
+                return Err(RecvError::OutOfBounds {
+                    file: h.file_id,
+                    offset: h.offset,
+                    len: expected_payload_len as u64,
+                    size,
+                });
+            }
+
             let payload: std::borrow::Cow<'_, [u8]> = if h.is_compressed {
                 let decompressed =
-                    crate::compression::decompress_chunk(&chunk.data, h.uncompressed_len as usize)
+                    crate::compression::decompress_chunk(&chunk.data, expected_payload_len)
                         .map_err(|e| {
                             RecvError::Io(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
@@ -192,36 +237,6 @@ impl ReceiverEngine {
             } else {
                 std::borrow::Cow::Borrowed(&chunk.data[..])
             };
-
-            // Snapshot what we need, then release the borrow on self.files.
-            let (size, part_path) = {
-                let Some(f) = self.files.get(&h.file_id) else {
-                    return Err(RecvError::OutOfBounds {
-                        file: h.file_id,
-                        offset: h.offset,
-                        len: payload.len() as u64,
-                        size: 0,
-                    });
-                };
-                (f.entry.size, f.part_path.clone())
-            };
-            let end = h
-                .offset
-                .checked_add(payload.len() as u64)
-                .ok_or(RecvError::OutOfBounds {
-                    file: h.file_id,
-                    offset: h.offset,
-                    len: payload.len() as u64,
-                    size,
-                })?;
-            if end > size {
-                return Err(RecvError::OutOfBounds {
-                    file: h.file_id,
-                    offset: h.offset,
-                    len: payload.len() as u64,
-                    size,
-                });
-            }
 
             // Cached part-file handle (one per file id).
             if let std::collections::hash_map::Entry::Vacant(e) = self.handles.entry(h.file_id) {
@@ -443,10 +458,33 @@ pub fn free_space(path: &Path) -> Result<u64, RecvError> {
     }
     #[cfg(windows)]
     {
-        let _ = probe;
-        // Implemented via GetDiskFreeSpaceExW in the Windows shell layer
-        // (dropbridge-tray); the core engine treats unknown as unlimited.
-        Ok(u64::MAX)
+        use std::os::windows::ffi::OsStrExt;
+        let mut path_wide: Vec<u16> = probe.as_os_str().encode_wide().collect();
+        path_wide.push(0);
+        let mut free_bytes_available: u64 = 0;
+        let mut total_number_of_bytes: u64 = 0;
+        let mut total_number_of_free_bytes: u64 = 0;
+        unsafe extern "system" {
+            fn GetDiskFreeSpaceExW(
+                lpDirectoryName: *const u16,
+                lpFreeBytesAvailableToCaller: *mut u64,
+                lpTotalNumberOfBytes: *mut u64,
+                lpTotalNumberOfFreeBytes: *mut u64,
+            ) -> i32;
+        }
+        let ret = unsafe {
+            GetDiskFreeSpaceExW(
+                path_wide.as_ptr(),
+                &mut free_bytes_available,
+                &mut total_number_of_bytes,
+                &mut total_number_of_free_bytes,
+            )
+        };
+        if ret != 0 {
+            Ok(free_bytes_available)
+        } else {
+            Ok(u64::MAX)
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {

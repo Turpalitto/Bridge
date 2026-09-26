@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use dropbridge_network::RelayConfig;
 use dropbridge_protocol::DeviceKind;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NodeConfig {
     /// Where keys, trust registry and the journal live.
     pub state_dir: PathBuf,
@@ -31,6 +31,30 @@ pub struct NodeConfig {
     pub override_stream_count: Option<u32>,
     /// Hardware-unsealed identity seed passed directly from host Keystore / TEE.
     pub hardware_identity_seed: Option<[u8; 32]>,
+}
+
+impl std::fmt::Debug for NodeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeConfig")
+            .field("state_dir", &self.state_dir)
+            .field("receive_dir", &self.receive_dir)
+            .field("device_name", &self.device_name)
+            .field("device_kind", &self.device_kind)
+            .field("relay", &self.relay)
+            .field("rendezvous_url", &self.rendezvous_url)
+            .field("auto_receive", &self.auto_receive)
+            .field("pairing_auto_approve", &self.pairing_auto_approve)
+            .field("announce", &self.announce)
+            .field("test_recv_fail_after", &self.test_recv_fail_after)
+            .field("fixed_port", &self.fixed_port)
+            .field("override_chunk_size", &self.override_chunk_size)
+            .field("override_stream_count", &self.override_stream_count)
+            .field(
+                "hardware_identity_seed",
+                &self.hardware_identity_seed.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl NodeConfig {
@@ -63,5 +87,19 @@ impl NodeConfig {
     }
     pub fn hints_path(&self) -> PathBuf {
         self.state_dir.join("hints.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_config_debug_redacts_seed() {
+        let mut cfg = NodeConfig::new(PathBuf::from("/tmp"), "test".into(), DeviceKind::Laptop);
+        cfg.hardware_identity_seed = Some([42u8; 32]);
+        let debug_str = format!("{cfg:?}");
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(!debug_str.contains("42"));
     }
 }

@@ -12,6 +12,7 @@
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +27,10 @@ use tokio::sync::broadcast;
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<CString>> =
         const { std::cell::RefCell::new(None) };
+}
+
+fn clear_error() {
+    LAST_ERROR.with(|c| *c.borrow_mut() = None);
 }
 
 fn now_unix() -> i64 {
@@ -63,8 +68,9 @@ fn out_json(v: serde_json::Value) -> *mut c_char {
 pub struct DbHandle {
     rt: Arc<Runtime>,
     node: Arc<Node>,
-    events: broadcast::Receiver<NodeEvent>,
-    watchers: Vec<watcher::OutboxHandle>,
+    events: tokio::sync::Mutex<broadcast::Receiver<NodeEvent>>,
+    watchers: std::sync::Mutex<Vec<watcher::OutboxHandle>>,
+    closed: AtomicBool,
 }
 
 fn parse_kind(s: &str) -> DeviceKind {
@@ -108,6 +114,11 @@ unsafe fn init_internal(cfg_json: *const c_char, hardware_seed: Option<[u8; 32]>
                 .map(|x| x.to_string())
                 .ok_or_else(|| format!("missing cfg field {k:?}"))
         };
+        if let Some(seed) = hardware_seed {
+            if seed.iter().all(|&b| b == 0) || seed.iter().all(|&b| b == 0xff) {
+                return Err("weak or invalid hardware key seed".to_string());
+            }
+        }
         let mut cfg = NodeConfig::new(
             PathBuf::from(get("state_dir")?),
             get("name")?,
@@ -139,12 +150,15 @@ unsafe fn init_internal(cfg_json: *const c_char, hardware_seed: Option<[u8; 32]>
         let node = rt
             .block_on(Node::start(cfg))
             .map_err(|e| format!("node start: {e}"))?;
-        let events = node.events();
+        let events = tokio::sync::Mutex::new(node.events());
+        let watchers = std::sync::Mutex::new(Vec::new());
+        let closed = AtomicBool::new(false);
         Ok(Box::into_raw(Box::new(DbHandle {
             rt,
             node,
             events,
-            watchers: Vec::new(),
+            watchers,
+            closed,
         })))
     });
     match res {
@@ -205,25 +219,29 @@ pub unsafe extern "C" fn Java_app_dropbridge_app_DropBridgeNative_initNodeWithKe
     db_init_with_key(cfg_json, key_seed)
 }
 
-unsafe fn with_handle<F, T>(h: *mut DbHandle, f: F) -> T
+unsafe fn with_handle<F, T>(h: *mut DbHandle, f: F) -> Option<T>
 where
-    F: FnOnce(&mut DbHandle) -> Result<T, String>,
-    T: Default,
+    F: FnOnce(&DbHandle) -> Result<T, String>,
 {
+    clear_error();
     if h.is_null() {
         set_error("null handle");
-        return T::default();
+        return None;
     }
-    let handle = &mut *h;
+    let handle = &*h;
+    if handle.closed.load(Ordering::Acquire) {
+        set_error("handle is closed / shut down");
+        return None;
+    }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(handle))) {
-        Ok(Ok(v)) => v,
+        Ok(Ok(v)) => Some(v),
         Ok(Err(e)) => {
             set_error(e);
-            T::default()
+            None
         }
         Err(_) => {
             set_error("panic inside FFI call");
-            T::default()
+            None
         }
     }
 }
@@ -241,6 +259,7 @@ pub unsafe extern "C" fn db_info(h: *mut DbHandle) -> *mut c_char {
             "name": h.node.config().device_name,
         })))
     })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Create a pairing invitation; returns `{"qr": "dropbridge://pair?..."}`.
@@ -256,6 +275,7 @@ pub unsafe extern "C" fn db_pair_qr(h: *mut DbHandle) -> *mut c_char {
         let qr = inv.to_qr_string().map_err(|e| format!("qr: {e}"))?;
         Ok(out_json(serde_json::json!({ "v": 1, "qr": qr })))
     })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Join using a scanned QR string. 0 = ok.
@@ -264,33 +284,17 @@ pub unsafe extern "C" fn db_pair_qr(h: *mut DbHandle) -> *mut c_char {
 /// Handle must come from [`db_init`]; `qr` must be valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn db_join(h: *mut DbHandle, qr: *const c_char) -> c_int {
-    if h.is_null() {
-        set_error("null handle");
-        return -1;
-    }
     let qr = match cstr(qr) {
         Ok(s) => s.to_string(),
         Err(_) => return -1,
     };
-    let handle = &mut *h;
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_handle(h, |h| {
         let inv = pairing::parse_qr(&qr).map_err(|e| format!("qr parse: {e}"))?;
-        handle
-            .rt
-            .block_on(handle.node.join_pairing(inv))
+        h.rt.block_on(h.node.join_pairing(inv))
             .map_err(|e| format!("join: {e}"))
-    }));
-    match res {
-        Ok(Ok(())) => 0,
-        Ok(Err(e)) => {
-            set_error(e);
-            -1
-        }
-        Err(_) => {
-            set_error("panic in db_join");
-            -1
-        }
-    }
+    })
+    .map(|_| 0)
+    .unwrap_or(-1)
 }
 
 /// Trusted devices as JSON array.
@@ -303,6 +307,7 @@ pub unsafe extern "C" fn db_devices(h: *mut DbHandle) -> *mut c_char {
         let devices = h.rt.block_on(h.node.trusted_devices());
         Ok(out_json(serde_json::json!({ "v": 1, "devices": devices })))
     })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Send paths to a device. `send_json`:
@@ -320,11 +325,14 @@ pub unsafe extern "C" fn db_send(h: *mut DbHandle, send_json: *const c_char) -> 
     };
     with_handle(h, |h| {
         let v: serde_json::Value = serde_json::from_str(&arg).map_err(|e| format!("json: {e}"))?;
-        let peer = v
+        let peer_raw = v
             .get("peer")
             .and_then(|x| x.as_str())
-            .ok_or("missing peer")?
-            .to_string();
+            .ok_or("missing peer")?;
+        let peer = peer_raw.trim().to_string();
+        if peer.is_empty() {
+            return Err("peer identifier cannot be empty".to_string());
+        }
         let source = if let Some(fds_arr) = v.get("fds").and_then(|x| x.as_array()) {
             let mut fds = Vec::new();
             for f in fds_arr {
@@ -370,15 +378,31 @@ pub unsafe extern "C" fn db_send(h: *mut DbHandle, send_json: *const c_char) -> 
         let res = h.rt.block_on(async move {
             let devices = node.trusted_devices().await;
             let q = peer.to_lowercase();
-            let target = devices
-                .into_iter()
+            let mut target: Vec<_> = devices
+                .iter()
                 .filter(|d| {
-                    d.name.to_lowercase().contains(&q)
+                    d.name.eq_ignore_ascii_case(&peer)
                         || dropbridge_network::hints::id_z32(&d.device_id)
-                            .to_lowercase()
-                            .starts_with(&q)
+                            .eq_ignore_ascii_case(&peer)
                 })
-                .collect::<Vec<_>>();
+                .cloned()
+                .collect();
+            if target.is_empty() {
+                if q.len() < 3 {
+                    return Err(format!(
+                        "peer query {peer:?} is too short; minimum 3 characters required"
+                    ));
+                }
+                target = devices
+                    .into_iter()
+                    .filter(|d| {
+                        d.name.to_lowercase().contains(&q)
+                            || dropbridge_network::hints::id_z32(&d.device_id)
+                                .to_lowercase()
+                                .starts_with(&q)
+                    })
+                    .collect();
+            }
             if target.is_empty() {
                 return Err(format!("no trusted device matches {peer:?}"));
             }
@@ -405,6 +429,7 @@ pub unsafe extern "C" fn db_send(h: *mut DbHandle, send_json: *const c_char) -> 
             "detail": res.detail,
         })))
     })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Send a native file descriptor directly (Android ContentResolver / ParcelFileDescriptor.detachFd()).
@@ -451,33 +476,21 @@ pub unsafe extern "C" fn db_send_fd(
 /// Handle must come from [`db_init`]; `outbox` must be valid UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn db_start_watcher(h: *mut DbHandle, outbox: *const c_char) -> c_int {
-    if h.is_null() {
-        set_error("null handle");
-        return -1;
-    }
     let outbox = match cstr(outbox) {
         Ok(s) => PathBuf::from(s),
         Err(_) => return -1,
     };
-    let handle = &mut *h;
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        watcher::spawn_outbox_watcher(handle.node.clone(), outbox, watcher::OutboxTarget::Auto)
-            .map_err(|e| format!("watcher: {e}"))
-    }));
-    match res {
-        Ok(Ok(w)) => {
-            handle.watchers.push(w);
-            0
-        }
-        Ok(Err(e)) => {
-            set_error(e);
-            -1
-        }
-        Err(_) => {
-            set_error("panic in db_start_watcher");
-            -1
-        }
-    }
+    with_handle(h, |h| {
+        let w = watcher::spawn_outbox_watcher(h.node.clone(), outbox, watcher::OutboxTarget::Auto)
+            .map_err(|e| format!("watcher: {e}"))?;
+        let mut watchers = h
+            .watchers
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {e}"))?;
+        watchers.push(w);
+        Ok(0)
+    })
+    .unwrap_or(-1)
 }
 
 /// Wait up to `timeout_ms` for the next node event. Returns JSON or null on
@@ -489,7 +502,8 @@ pub unsafe extern "C" fn db_start_watcher(h: *mut DbHandle, outbox: *const c_cha
 pub unsafe extern "C" fn db_event(h: *mut DbHandle, timeout_ms: u32) -> *mut c_char {
     with_handle(h, |h| {
         let ev = h.rt.block_on(async {
-            tokio::time::timeout(Duration::from_millis(timeout_ms as u64), h.events.recv()).await
+            let mut rx = h.events.lock().await;
+            tokio::time::timeout(Duration::from_millis(timeout_ms as u64), rx.recv()).await
         });
         let ev = match ev {
             Err(_) => return Ok(std::ptr::null_mut()), // timeout = no event yet
@@ -509,6 +523,7 @@ pub unsafe extern "C" fn db_event(h: *mut DbHandle, timeout_ms: u32) -> *mut c_c
             Err(broadcast::error::RecvError::Closed) => Err("event channel closed".into()),
         }
     })
+    .unwrap_or(std::ptr::null_mut())
 }
 
 /// Stop the node and free the handle. The handle is invalid afterwards.
@@ -520,9 +535,17 @@ pub unsafe extern "C" fn db_shutdown(h: *mut DbHandle) {
     if h.is_null() {
         return;
     }
-    let boxed = Box::from_raw(h);
-    boxed.rt.block_on(boxed.node.endpoint().close());
-    // Runtime drops after node; background tasks end with the runtime.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handle = &*h;
+        if handle.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(mut watchers) = handle.watchers.lock() {
+            watchers.clear();
+        }
+        handle.rt.block_on(handle.node.endpoint().close());
+        let _ = Box::from_raw(h);
+    }));
 }
 
 /// Last error on this thread ("" if none). Pointer is owned by the library
@@ -546,6 +569,143 @@ static EMPTY: &[u8] = b"\0";
 #[no_mangle]
 pub unsafe extern "C" fn db_free_string(s: *mut c_char) {
     if !s.is_null() {
-        drop(CString::from_raw(s));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(CString::from_raw(s));
+        }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    #[test]
+    fn test_null_pointer_safety() {
+        unsafe {
+            assert_eq!(db_join(std::ptr::null_mut(), std::ptr::null()), -1);
+            assert!(db_info(std::ptr::null_mut()).is_null());
+            assert!(db_pair_qr(std::ptr::null_mut()).is_null());
+            assert!(db_devices(std::ptr::null_mut()).is_null());
+            assert!(db_send(std::ptr::null_mut(), std::ptr::null()).is_null());
+            assert!(db_send_fd(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                0
+            )
+            .is_null());
+            assert_eq!(db_start_watcher(std::ptr::null_mut(), std::ptr::null()), -1);
+            assert!(db_event(std::ptr::null_mut(), 10).is_null());
+            db_shutdown(std::ptr::null_mut());
+            db_free_string(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn test_init_invalid_json() {
+        unsafe {
+            let bad_json = CString::new("not valid json").unwrap();
+            let handle = db_init(bad_json.as_ptr());
+            assert!(handle.is_null());
+            let err_ptr = db_last_error();
+            assert!(!err_ptr.is_null());
+            let err = CStr::from_ptr(err_ptr).to_str().unwrap();
+            assert!(err.contains("cfg json"));
+        }
+    }
+
+    #[test]
+    fn test_weak_hardware_seeds_rejected() {
+        unsafe {
+            let tmp = tempfile::tempdir().unwrap();
+            let cfg = serde_json::json!({
+                "state_dir": tmp.path().to_str().unwrap(),
+                "receive_dir": tmp.path().to_str().unwrap(),
+                "name": "WeakTest",
+                "relay": "disabled",
+            });
+            let cfg_c = CString::new(cfg.to_string()).unwrap();
+
+            // All zeroes
+            let zeroes = [0u8; 32];
+            let h = db_init_with_key(cfg_c.as_ptr(), zeroes.as_ptr());
+            assert!(h.is_null());
+            let err = CStr::from_ptr(db_last_error()).to_str().unwrap();
+            assert!(err.contains("weak or invalid"));
+
+            // All 0xff
+            let all_ones = [0xffu8; 32];
+            let h = db_init_with_key(cfg_c.as_ptr(), all_ones.as_ptr());
+            assert!(h.is_null());
+
+            // Null pointer seed
+            let h = db_init_with_key(cfg_c.as_ptr(), std::ptr::null());
+            assert!(h.is_null());
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_and_basic_calls() {
+        unsafe {
+            let tmp = tempfile::tempdir().unwrap();
+            let cfg = serde_json::json!({
+                "state_dir": tmp.path().join("state").to_str().unwrap(),
+                "receive_dir": tmp.path().join("recv").to_str().unwrap(),
+                "name": "LifecycleNode",
+                "relay": "disabled",
+                "announce": false,
+            });
+            let cfg_c = CString::new(cfg.to_string()).unwrap();
+            let h = db_init(cfg_c.as_ptr());
+            assert!(!h.is_null());
+
+            // db_info
+            let info_p = db_info(h);
+            assert!(!info_p.is_null());
+            let info_s = CStr::from_ptr(info_p).to_str().unwrap();
+            let info_v: serde_json::Value = serde_json::from_str(info_s).unwrap();
+            assert_eq!(info_v["name"], "LifecycleNode");
+            assert!(info_v["device_id"].is_string());
+            db_free_string(info_p);
+
+            // db_pair_qr
+            let qr_p = db_pair_qr(h);
+            assert!(!qr_p.is_null());
+            let qr_s = CStr::from_ptr(qr_p).to_str().unwrap();
+            let qr_v: serde_json::Value = serde_json::from_str(qr_s).unwrap();
+            assert!(qr_v["qr"]
+                .as_str()
+                .unwrap()
+                .starts_with("dropbridge://pair"));
+            db_free_string(qr_p);
+
+            // db_devices
+            let dev_p = db_devices(h);
+            assert!(!dev_p.is_null());
+            let dev_s = CStr::from_ptr(dev_p).to_str().unwrap();
+            let dev_v: serde_json::Value = serde_json::from_str(dev_s).unwrap();
+            assert!(dev_v["devices"].is_array());
+            db_free_string(dev_p);
+
+            // db_event with short timeout returns null (timeout)
+            let ev_p = db_event(h, 20);
+            assert!(ev_p.is_null());
+
+            // db_send rejects empty peer
+            let send_empty_peer = serde_json::json!({
+                "peer": "   ",
+                "paths": ["test.txt"]
+            });
+            let send_empty_c = CString::new(send_empty_peer.to_string()).unwrap();
+            let send_res = db_send(h, send_empty_c.as_ptr());
+            assert!(send_res.is_null());
+            let err = CStr::from_ptr(db_last_error()).to_str().unwrap();
+            assert!(err.contains("empty"));
+
+            // db_shutdown
+            db_shutdown(h);
+        }
     }
 }

@@ -111,13 +111,21 @@ fn walk(
     abs_paths: &mut Vec<PathBuf>,
     limit: usize,
 ) -> Result<(), PlanError> {
-    if current.is_file() {
+    let meta = match std::fs::symlink_metadata(current) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if meta.is_symlink() {
+        return Ok(()); // symlinks/devices: skip (never follow out of the tree)
+    }
+    if meta.is_file() {
         let rel = rel_to(base, current, named_root)?;
         push_entry(current, &rel, entries, abs_paths, limit)?;
         return Ok(());
     }
-    if !current.is_dir() {
-        return Ok(()); // symlinks/devices: skip (never follow out of the tree)
+    if !meta.is_dir() {
+        return Ok(()); // special files: skip
     }
     let mut kids: Vec<_> = std::fs::read_dir(current)?.collect();
     // Deterministic order → stable manifests.
@@ -260,5 +268,19 @@ mod tests {
         assert_eq!(m.entries[0].rel_path, "video.mp4");
         assert_eq!(m.entries[1].rel_path, "notes.txt");
         assert_eq!(abs.len(), 2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn top_level_symlink_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("secret.txt");
+        std::fs::write(&target, b"secret").unwrap();
+        let symlink_path = tmp.path().join("link_to_secret.txt");
+        std::os::unix::fs::symlink(&target, &symlink_path).unwrap();
+
+        let (m, abs) = build_manifest(&TransferSource::Paths(vec![symlink_path])).unwrap();
+        assert_eq!(m.entries.len(), 0);
+        assert_eq!(abs.len(), 0);
     }
 }

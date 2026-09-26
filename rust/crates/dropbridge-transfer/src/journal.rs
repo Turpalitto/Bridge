@@ -18,6 +18,8 @@ pub enum JournalError {
     Io(#[from] std::io::Error),
     #[error("serde: {0}")]
     Serde(String),
+    #[error("corrupt: {0}")]
+    Corrupt(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +217,11 @@ impl Journal {
         start: u64,
         end: u64,
     ) -> Result<(), JournalError> {
+        if start > i64::MAX as u64 || end > i64::MAX as u64 || start > end {
+            return Err(JournalError::Corrupt(format!(
+                "invalid range {start}..{end}"
+            )));
+        }
         let conn = self.lock();
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO ranges VALUES (?1,?2,?3,?4)",
@@ -236,7 +243,12 @@ impl Journal {
             "SELECT start, end FROM ranges WHERE transfer_id=?1 AND file_id=?2 ORDER BY start",
         )?;
         let rows = stmt.query_map(params![transfer_id, file_id as i32], |row| {
-            Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
+            let start = row.get::<_, i64>(0)?;
+            let end = row.get::<_, i64>(1)?;
+            if start < 0 || end < 0 || start > end {
+                return Err(rusqlite::Error::IntegralValueOutOfRange(0, start));
+            }
+            Ok((start as u64, end as u64))
         })?;
         let mut set = RangeSet::new();
         for r in rows {

@@ -33,7 +33,10 @@ struct Snapshot {
 }
 
 fn snapshot(path: &Path) -> Option<Snapshot> {
-    let meta = std::fs::metadata(path).ok()?;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.is_symlink() {
+        return None;
+    }
     Some(Snapshot {
         size: meta.len(),
         mtime: meta.modified().ok()?,
@@ -50,6 +53,9 @@ fn dir_snapshot(path: &Path) -> Option<Snapshot> {
         let rd = std::fs::read_dir(&p).ok()?;
         for e in rd.flatten() {
             let ty = e.file_type().ok()?;
+            if ty.is_symlink() {
+                continue;
+            }
             let meta = e.metadata().ok()?;
             entries += 1;
             if ty.is_dir() {
@@ -131,9 +137,16 @@ pub fn spawn_outbox_watcher(
                         let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
                             return false;
                         };
-                        name != "Sent"
-                            && !name.starts_with('.')
-                            && !name.ends_with(".dropbridge-part")
+                        if name == "Sent"
+                            || name.starts_with('.')
+                            || name.ends_with(".dropbridge-part")
+                        {
+                            return false;
+                        }
+                        match std::fs::symlink_metadata(p) {
+                            Ok(m) => !m.is_symlink(),
+                            Err(_) => false,
+                        }
                     })
                     .collect::<Vec<_>>(),
                 Err(e) => {

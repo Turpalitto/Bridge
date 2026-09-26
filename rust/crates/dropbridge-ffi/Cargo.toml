@@ -16,3 +16,6 @@ tokio = { workspace = true }
 dropbridge-network = { path = "../dropbridge-network" }
 anyhow = { workspace = true }
 dropbridge-transfer = { path = "../dropbridge-transfer" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

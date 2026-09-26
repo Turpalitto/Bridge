@@ -7,12 +7,20 @@
 use std::path::Path;
 use thiserror::Error;
 
+/// Maximum permitted uncompressed chunk size (16 MiB). Chunks claiming larger sizes
+/// are rejected to protect against decompression memory bombs.
+pub const MAX_DECOMPRESSED_CHUNK_SIZE: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CompressionError {
     #[error("decompression failed: {0}")]
     Decompress(String),
     #[error("decompressed length mismatch: expected {expected}, got {actual}")]
     LengthMismatch { expected: usize, actual: usize },
+    #[error("uncompressed length exceeds limit: {0} > {MAX_DECOMPRESSED_CHUNK_SIZE}")]
+    TooLarge(usize),
+    #[error("invalid uncompressed length: 0")]
+    ZeroLength,
 }
 
 /// Extensions known to be already compressed, where zstd yields negligible or negative savings.
@@ -53,6 +61,12 @@ pub fn compress_chunk(data: &[u8], level: i32) -> Option<Vec<u8>> {
 
 /// Decompress chunk data, verifying the expected uncompressed length.
 pub fn decompress_chunk(data: &[u8], expected_len: usize) -> Result<Vec<u8>, CompressionError> {
+    if expected_len == 0 {
+        return Err(CompressionError::ZeroLength);
+    }
+    if expected_len > MAX_DECOMPRESSED_CHUNK_SIZE {
+        return Err(CompressionError::TooLarge(expected_len));
+    }
     let decompressed = zstd::bulk::decompress(data, expected_len)
         .map_err(|e| CompressionError::Decompress(e.to_string()))?;
     if decompressed.len() != expected_len {
@@ -115,5 +129,22 @@ mod tests {
         let junk = b"not a valid zstd frame payload";
         let err = decompress_chunk(junk, 100);
         assert!(matches!(err, Err(CompressionError::Decompress(_))));
+    }
+
+    #[test]
+    fn test_decompress_rejects_too_large() {
+        let junk = b"small";
+        let err = decompress_chunk(junk, MAX_DECOMPRESSED_CHUNK_SIZE + 1);
+        assert_eq!(
+            err,
+            Err(CompressionError::TooLarge(MAX_DECOMPRESSED_CHUNK_SIZE + 1))
+        );
+    }
+
+    #[test]
+    fn test_decompress_rejects_zero_length() {
+        let junk = b"small";
+        let err = decompress_chunk(junk, 0);
+        assert_eq!(err, Err(CompressionError::ZeroLength));
     }
 }

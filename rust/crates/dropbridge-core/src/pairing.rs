@@ -195,20 +195,28 @@ pub async fn handle_incoming_pairing(node: &Node, conn: Connection) -> Result<()
         return Err(CoreError::Pairing("expected request".into()));
     };
 
-    // Validate one-time token against the active invitation.
-    let code = {
+    // Validate one-time token against the active invitation and consume it atomically.
+    let (code, approval_rx) = {
         let mut guard = node.pairing.lock().await;
-        let Some(state) = guard.as_mut() else {
+        let Some(mut state) = guard.take() else {
             fail(&mut ctrl, "no active pairing").await;
             return Err(CoreError::Pairing("no active pairing".into()));
         };
         let inv = &state.invitation;
         let now = chrono::Utc::now().timestamp();
-        if inv.expired(now) || inv.pairing_token != token {
+        let token_matches = inv
+            .pairing_token
+            .iter()
+            .zip(token.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
+        if inv.expired(now) || !token_matches {
             fail(&mut ctrl, "invitation expired or invalid").await;
             return Err(CoreError::Pairing("bad token".into()));
         }
-        inv.auth_code(&remote_id)
+        let code = inv.auth_code(&remote_id);
+        let rx = state.approval.take();
+        (code, rx)
     };
 
     ctrl.send_raw(encode_raw(&PairMsg::Challenge { auth_code: code })?)
@@ -223,13 +231,7 @@ pub async fn handle_incoming_pairing(node: &Node, conn: Connection) -> Result<()
     let approved = if node.config().pairing_auto_approve {
         true
     } else {
-        let rx = node
-            .pairing
-            .lock()
-            .await
-            .as_mut()
-            .and_then(|s| s.approval.take());
-        match rx {
+        match approval_rx {
             Some(rx) => matches!(
                 tokio::time::timeout(Duration::from_secs(PAIRING_TTL_SECS.max(0) as u64), rx).await,
                 Ok(Ok(true))

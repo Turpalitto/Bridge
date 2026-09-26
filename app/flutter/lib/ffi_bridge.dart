@@ -22,6 +22,9 @@ typedef _InitWithKeyDart = Pointer<Void> Function(Pointer<Utf8> cfgJson, Pointer
 typedef _StrFnC = Pointer<Utf8> Function(Pointer<Void> h);
 typedef _StrFnDart = Pointer<Utf8> Function(Pointer<Void> h);
 
+typedef _SendC = Pointer<Utf8> Function(Pointer<Void> h, Pointer<Utf8> sendJson);
+typedef _SendDart = Pointer<Utf8> Function(Pointer<Void> h, Pointer<Utf8> sendJson);
+
 typedef _JoinC = Int32 Function(Pointer<Void> h, Pointer<Utf8> qr);
 typedef _JoinDart = int Function(Pointer<Void> h, Pointer<Utf8> qr);
 
@@ -61,7 +64,7 @@ class DropBridgeCore {
   late final _pairQr = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_pair_qr');
   late final _join = _lib.lookupFunction<_JoinC, _JoinDart>('db_join');
   late final _devices = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_devices');
-  late final _send = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_send');
+  late final _send = _lib.lookupFunction<_SendC, _SendDart>('db_send');
   late final _event = _lib.lookupFunction<_EventC, _EventDart>('db_event');
   late final _watcher = _lib.lookupFunction<_WatcherC, _WatcherDart>('db_start_watcher');
   late final _shutdown = _lib.lookupFunction<_ShutdownC, _ShutdownDart>('db_shutdown');

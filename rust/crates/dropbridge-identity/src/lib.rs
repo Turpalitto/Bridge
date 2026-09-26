@@ -70,6 +70,9 @@ impl DeviceIdentity {
 
     /// Restore from raw 32-byte seed (already unwrapped).
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, IdentityError> {
+        if bytes == [0u8; 32] || bytes == [0xffu8; 32] {
+            return Err(IdentityError::InvalidKey);
+        }
         Ok(Self {
             secret: SecretKey::from_bytes(&bytes),
         })
@@ -134,7 +137,7 @@ impl DeviceIdentity {
         now: i64,
         sig: &[u8; 64],
     ) -> Result<(), IdentityError> {
-        if (now - timestamp).abs() > AUTH_TIMESTAMP_WINDOW_SECS {
+        if now.abs_diff(timestamp) > AUTH_TIMESTAMP_WINDOW_SECS as u64 {
             return Err(IdentityError::TimestampWindow);
         }
         let msg = canonical_auth_challenge(my_id, nonce, timestamp);
@@ -246,5 +249,34 @@ mod tests {
         let a = DeviceIdentity::generate();
         let s = a.device_id_z32();
         assert_eq!(DeviceIdentity::parse_z32(&s).unwrap(), a.device_id());
+    }
+
+    #[test]
+    fn weak_seeds_rejected() {
+        assert!(matches!(
+            DeviceIdentity::from_bytes([0u8; 32]),
+            Err(IdentityError::InvalidKey)
+        ));
+        assert!(matches!(
+            DeviceIdentity::from_bytes([0xffu8; 32]),
+            Err(IdentityError::InvalidKey)
+        ));
+    }
+
+    #[test]
+    fn overflow_timestamp_does_not_panic() {
+        let a = DeviceIdentity::generate();
+        let b = DeviceIdentity::generate();
+        let nonce = [1u8; 32];
+        let sig = [0u8; 64];
+        let res = DeviceIdentity::verify_auth_challenge(
+            &a.device_id(),
+            &b.device_id(),
+            &nonce,
+            i64::MIN,
+            0,
+            &sig,
+        );
+        assert!(matches!(res, Err(IdentityError::TimestampWindow)));
     }
 }

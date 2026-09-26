@@ -1023,6 +1023,7 @@ dependencies = [
  "dropbridge-protocol",
  "dropbridge-transfer",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
