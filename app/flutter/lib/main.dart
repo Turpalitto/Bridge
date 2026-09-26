@@ -89,7 +89,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String _transferSpeed = '';
   String _bytesProgressText = '';
   int _transferredBytes = 0;
-  int _totalTransferBytes = 0;
   DateTime? _lastProgressUpdate;
   int _lastBytesSnapshot = 0;
 
@@ -149,7 +148,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onTransferProgress(int delta, int total) {
     setState(() {
       _isTransferring = true;
-      _totalTransferBytes = total;
       _transferredBytes += delta;
       _progressFraction = (_transferredBytes / total).clamp(0.0, 1.0);
 
@@ -209,7 +207,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _isTransferring = true;
       _activePeer = peer;
       _transferredBytes = 0;
-      _totalTransferBytes = total;
       _progressFraction = 0.0;
       _bytesProgressText = '0 Б / ${_formatBytes(total)}';
     });
@@ -611,7 +608,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // Console / Diagnostics Log Box
           Container(
             height: 120,
-            color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
             child: ListView(
               reverse: true,
               padding: const EdgeInsets.all(8),

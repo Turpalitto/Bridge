@@ -1,8 +1,21 @@
 // Dart bindings for libdropbridge_ffi (C-ABI JSON surface).
 //
 // Rule: only commands/metadata/events cross this bridge — never file bytes.
-// Blocking FFI calls (db_send, db_event) run on a worker isolate so the UI
-// thread never stalls.
+// Blocking FFI calls (db_send, db_event, db_devices, ...) run on a worker
+// isolate so the UI thread never stalls.
+//
+// IMPORTANT: Dart isolates can only exchange "sendable" values (primitives,
+// Strings, Lists, Maps, SendPorts). A `DynamicLibrary`, `Pointer` wrapper
+// closures capturing `this` are NOT sendable — passing them to
+// `Isolate.run`/`Isolate.spawn` throws:
+//
+//   Invalid argument(s): Illegal argument in isolate message:
+//   (object is a DynamicLibrary)
+//
+// So every worker entry point below is a TOP-LEVEL function and only `int`
+// (handle address) + `String` payloads are captured. The library is re-opened
+// INSIDE the isolate. `db_last_error` is thread-local in Rust, therefore the
+// error string is always read on the same thread/isolate right after the call.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
@@ -56,8 +69,120 @@ class DropBridgeError implements Exception {
   String toString() => 'DropBridgeError: $message';
 }
 
-/// Thin, mostly-synchronous wrapper. Long operations go through
-/// [runBlocking] on a worker isolate.
+// --- Top-level isolate helpers (must stay top-level!) -----------------------
+
+String _libFileName() {
+  if (Platform.isAndroid) return 'libdropbridge_ffi.so';
+  if (Platform.isWindows) return 'dropbridge_ffi.dll';
+  return 'libdropbridge_ffi.dylib';
+}
+
+DynamicLibrary _openLibForIsolate() =>
+    DynamicLibrary.open(_libFileName());
+
+String _lastErrIsolate(DynamicLibrary lib) {
+  try {
+    final fn = lib.lookupFunction<_LastErrorC, _LastErrorDart>('db_last_error');
+    final p = fn();
+    if (p == nullptr) return '';
+    return p.toDartString();
+  } catch (_) {
+    return '';
+  }
+}
+
+Map<String, dynamic> _takeJsonIsolate(DynamicLibrary lib, Pointer<Utf8> p) {
+  if (p == nullptr) throw DropBridgeError(_lastErrIsolate(lib));
+  final free = lib.lookupFunction<_FreeC, _FreeDart>('db_free_string');
+  final s = p.toDartString();
+  free(p);
+  final v = jsonDecode(s);
+  if (v is Map) return Map<String, dynamic>.from(v);
+  return {'v': 1, 'value': v};
+}
+
+Map<String, dynamic> _devicesSync(int handleAddr) {
+  final lib = _openLibForIsolate();
+  final fn = lib.lookupFunction<_StrFnC, _StrFnDart>('db_devices');
+  return _takeJsonIsolate(lib, fn(Pointer.fromAddress(handleAddr)));
+}
+
+Map<String, dynamic> _pairQrSync(int handleAddr) {
+  final lib = _openLibForIsolate();
+  final fn = lib.lookupFunction<_StrFnC, _StrFnDart>('db_pair_qr');
+  return _takeJsonIsolate(lib, fn(Pointer.fromAddress(handleAddr)));
+}
+
+Map<String, dynamic> _syncListSync(int handleAddr) {
+  final lib = _openLibForIsolate();
+  final fn =
+      lib.lookupFunction<_StrFnC, _StrFnDart>('db_sync_folders_list');
+  return _takeJsonIsolate(lib, fn(Pointer.fromAddress(handleAddr)));
+}
+
+Map<String, dynamic> _sendSync(int handleAddr, String reqJson) {
+  final lib = _openLibForIsolate();
+  final fn = lib.lookupFunction<_SendC, _SendDart>('db_send');
+  final arg = reqJson.toNativeUtf8();
+  try {
+    return _takeJsonIsolate(
+        lib, fn(Pointer.fromAddress(handleAddr), arg));
+  } finally {
+    calloc.free(arg);
+  }
+}
+
+void _joinSync(int handleAddr, String qr) {
+  final lib = _openLibForIsolate();
+  final fn = lib.lookupFunction<_JoinC, _JoinDart>('db_join');
+  final arg = qr.toNativeUtf8();
+  try {
+    final r = fn(Pointer.fromAddress(handleAddr), arg);
+    if (r != 0) throw DropBridgeError(_lastErrIsolate(lib));
+  } finally {
+    calloc.free(arg);
+  }
+}
+
+/// Entry for the long-polling event isolate.
+/// message = [SendPort, int handleAddr]
+void _eventsEntry(List<dynamic> message) {
+  final out = message[0] as SendPort;
+  final handleAddr = message[1] as int;
+  final lib = _openLibForIsolate();
+  final eventFn = lib.lookupFunction<_EventC, _EventDart>('db_event');
+  final freeFn = lib.lookupFunction<_FreeC, _FreeDart>('db_free_string');
+  final h = Pointer<Void>.fromAddress(handleAddr);
+  while (true) {
+    Pointer<Utf8> p;
+    try {
+      p = eventFn(h, 2000);
+    } catch (_) {
+      continue;
+    }
+    if (p == nullptr) continue; // timeout
+    String s;
+    try {
+      s = p.toDartString();
+    } finally {
+      try {
+        freeFn(p);
+      } catch (_) {}
+    }
+    try {
+      final v = jsonDecode(s);
+      if (v is Map) {
+        out.send(Map<String, dynamic>.from(v));
+      }
+    } catch (_) {
+      // ignore malformed event
+    }
+  }
+}
+
+/// Thin wrapper around the FFI handle. Fast/short calls run on the calling
+/// isolate; blocking calls are dispatched to a worker isolate via top-level
+/// helpers above (only `int` + `String` cross the isolate boundary).
 class DropBridgeCore {
   DropBridgeCore._(this._lib);
 
@@ -67,26 +192,16 @@ class DropBridgeCore {
   late final _init = _lib.lookupFunction<_InitC, _InitDart>('db_init');
   late final _initWithKey = _lib.lookupFunction<_InitWithKeyC, _InitWithKeyDart>('db_init_with_key');
   late final _info = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_info');
-  late final _pairQr = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_pair_qr');
-  late final _join = _lib.lookupFunction<_JoinC, _JoinDart>('db_join');
-  late final _devices = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_devices');
-  late final _send = _lib.lookupFunction<_SendC, _SendDart>('db_send');
   late final _event = _lib.lookupFunction<_EventC, _EventDart>('db_event');
   late final _watcher = _lib.lookupFunction<_WatcherC, _WatcherDart>('db_start_watcher');
   late final _syncFolderAdd = _lib.lookupFunction<_SyncAddC, _SyncAddDart>('db_sync_folder_add');
   late final _syncFolderRemove = _lib.lookupFunction<_SyncRemoveC, _SyncRemoveDart>('db_sync_folder_remove');
-  late final _syncFoldersList = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_sync_folders_list');
   late final _shutdown = _lib.lookupFunction<_ShutdownC, _ShutdownDart>('db_shutdown');
   late final _lastError = _lib.lookupFunction<_LastErrorC, _LastErrorDart>('db_last_error');
   late final _free = _lib.lookupFunction<_FreeC, _FreeDart>('db_free_string');
 
   static DropBridgeCore load() {
-    final lib = Platform.isAndroid
-        ? DynamicLibrary.open('libdropbridge_ffi.so')
-        : Platform.isWindows
-            ? DynamicLibrary.open('dropbridge_ffi.dll')
-            : DynamicLibrary.open('libdropbridge_ffi.dylib');
-    return DropBridgeCore._(lib);
+    return DropBridgeCore._(DynamicLibrary.open(_libFileName()));
   }
 
   String _lastErr() {
@@ -143,17 +258,26 @@ class DropBridgeCore {
 
   Map<String, dynamic> info() => _takeJson(_info(_h));
 
-  Future<Map<String, dynamic>> pairQr() => runBlocking(() => _takeJson(_pairQr(_h)));
-
-  Future<void> join(String qr) async {
-    final arg = _c(qr);
-    final r = _join(_h, arg);
-    calloc.free(arg);
-    if (r != 0) throw DropBridgeError(_lastErr());
+  Future<Map<String, dynamic>> pairQr() {
+    final h = _h.address;
+    // Only sendable `int` is captured — library is re-opened in the isolate.
+    return Isolate.run(() => _pairQrSync(h));
   }
 
+  Future<void> join(String qr) {
+    final h = _h.address;
+    final req = qr;
+    return Isolate.run(() => _joinSync(h, req));
+  }
+
+  /// Kept for compatibility; prefer the specific isolate helpers above.
+  /// NOTE: never pass closures capturing `this`/`DynamicLibrary` here.
+  @Deprecated('Use the built-in async methods (devices/send/...) instead')
+  Future<T> runBlocking<T>(FutureOr<T> Function() body) => Isolate.run(body);
+
   Future<List<dynamic>> devices() async {
-    final j = await runBlocking(() => _takeJson(_devices(_h)));
+    final h = _h.address;
+    final j = await Isolate.run(() => _devicesSync(h));
     return (j['devices'] as List?) ?? const [];
   }
 
@@ -162,18 +286,13 @@ class DropBridgeCore {
     required List<String> paths,
     int? session,
   }) {
-    return runBlocking(() {
-      final arg = _c(jsonEncode({
-        'peer': peer,
-        'paths': paths,
-        'session': session,
-      }));
-      try {
-        return _takeJson(_send(_h, arg));
-      } finally {
-        calloc.free(arg);
-      }
+    final h = _h.address;
+    final req = jsonEncode({
+      'peer': peer,
+      'paths': paths,
+      'session': session,
     });
+    return Isolate.run(() => _sendSync(h, req));
   }
 
   Future<void> startWatcher(String outbox) async {
@@ -204,12 +323,16 @@ class DropBridgeCore {
   }
 
   Future<List<Map<String, dynamic>>> listSyncFolders() async {
-    final j = await runBlocking(() => _takeJson(_syncFoldersList(_h)));
+    final h = _h.address;
+    final j = await Isolate.run(() => _syncListSync(h));
     final list = (j['folders'] as List?) ?? const [];
     return list.cast<Map<String, dynamic>>();
   }
 
   /// One event, waiting up to [timeoutMs]. Returns null on timeout.
+  /// Call only from the isolate that owns the poll loop, or from the main
+  /// isolate when no event stream is active (concurrent db_event calls
+  /// serialize in Rust and add latency).
   Map<String, dynamic>? pollEventSync({int timeoutMs = 1000}) {
     final p = _event(_h, timeoutMs);
     if (p == nullptr) return null; // timeout (or error — check _lastErr)
@@ -219,35 +342,43 @@ class DropBridgeCore {
   }
 
   /// Event stream backed by a worker isolate long-polling db_event.
+  /// The isolate is killed when the stream subscription is cancelled.
   Stream<Map<String, dynamic>> events() {
-    final controller = StreamController<Map<String, dynamic>>();
-    final recv = RawReceivePort();
+    late final StreamController<Map<String, dynamic>> controller;
+    Isolate? worker;
+    RawReceivePort? recv;
+
+    controller = StreamController<Map<String, dynamic>>(
+      onCancel: () async {
+        worker?.kill(priority: Isolate.immediate);
+        worker = null;
+        recv?.close();
+      },
+    );
+
+    recv = RawReceivePort();
     final handle = _h.address;
 
     recv.handler = (msg) {
       if (msg == null) {
-        controller.close();
-        recv.close();
+        if (!controller.isClosed) controller.close();
+        recv?.close();
         return;
       }
-      controller.add(Map<String, dynamic>.from(msg as Map));
+      if (msg is Map && !controller.isClosed) {
+        controller.add(Map<String, dynamic>.from(msg));
+      }
     };
 
-    Isolate.spawn((SendPort out) {
-      final core = DropBridgeCore.load();
-      core._h = Pointer.fromAddress(handle);
-      while (true) {
-        final ev = core.pollEventSync(timeoutMs: 2000);
-        if (ev != null) out.send(ev);
-      }
-    }, recv.sendPort);
+    // Top-level entry + sendable args only (SendPort + int).
+    Isolate.spawn(_eventsEntry, [recv.sendPort, handle]).then((iso) {
+      worker = iso;
+      if (controller.isClosed) iso.kill(priority: Isolate.immediate);
+    }).catchError((Object e) {
+      if (!controller.isClosed) controller.addError(e);
+    });
 
     return controller.stream;
-  }
-
-  /// Run a blocking FFI closure off the UI isolate.
-  Future<T> runBlocking<T>(T Function() body) async {
-    return await Isolate.run(body);
   }
 
   void shutdown() {
