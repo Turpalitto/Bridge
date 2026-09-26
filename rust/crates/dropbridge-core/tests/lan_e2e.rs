@@ -199,6 +199,65 @@ async fn collision_renames_instead_of_overwrite() {
     node_b.endpoint().close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sync_folder_automatic_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_a = base_cfg(tmp.path(), "laptop_sync", DeviceKind::Laptop, 45041);
+    let cfg_b = base_cfg(tmp.path(), "phone_sync", DeviceKind::Phone, 45042);
+    let node_a = Node::start(cfg_a.clone()).await.unwrap();
+    let node_b = Node::start(cfg_b.clone()).await.unwrap();
+
+    pair(&node_a, &node_b).await;
+
+    let sync_dir = tmp.path().join("phone_sync_dir");
+    std::fs::create_dir_all(&sync_dir).unwrap();
+
+    node_b
+        .add_sync_folder(
+            sync_dir.clone(),
+            dropbridge_core::watcher::OutboxTarget::Auto,
+        )
+        .await
+        .unwrap();
+
+    let list = node_b.list_sync_folders();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].path, sync_dir);
+
+    let file_path = sync_dir.join("live_doc.txt");
+    std::fs::write(&file_path, b"automatic sync payload").unwrap();
+
+    let recv_file = cfg_a.receive_dir.join("live_doc.txt");
+    let mut delivered = false;
+    for _ in 0..60 {
+        if recv_file.exists() && std::fs::read(&recv_file).unwrap() == b"automatic sync payload" {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        delivered,
+        "sync folder item was not delivered within timeout"
+    );
+
+    assert!(file_path.exists(), "original file must stay in sync folder");
+    assert_eq!(
+        std::fs::read(&file_path).unwrap(),
+        b"automatic sync payload"
+    );
+    assert!(
+        !sync_dir.join("Sent").exists(),
+        "sync folder must not create a Sent subfolder"
+    );
+
+    assert!(node_b.remove_sync_folder(&sync_dir).await.unwrap());
+    assert_eq!(node_b.list_sync_folders().len(), 0);
+
+    node_a.close().await;
+    node_b.close().await;
+}
+
 /// Tiny recursive walker (avoids a walkdir dependency).
 fn walkdir_names(root: &std::path::Path) -> Vec<String> {
     let mut out = Vec::new();

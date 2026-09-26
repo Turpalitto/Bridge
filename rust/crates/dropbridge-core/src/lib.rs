@@ -15,6 +15,7 @@ pub mod events;
 pub mod node;
 pub mod pairing;
 pub mod session;
+pub mod sync;
 pub mod watcher;
 
 pub use config::NodeConfig;

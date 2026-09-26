@@ -493,6 +493,85 @@ pub unsafe extern "C" fn db_start_watcher(h: *mut DbHandle, outbox: *const c_cha
     .unwrap_or(-1)
 }
 
+/// Add a directory to the continuously synchronized folders list.
+/// `folder_json`: `{"path": "/path/to/folder", "target": "auto"|"<device-id>"}`
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// Handle must come from [`db_init`]; `folder_json` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn db_sync_folder_add(h: *mut DbHandle, folder_json: *const c_char) -> c_int {
+    let arg = match cstr(folder_json) {
+        Ok(s) => s.to_string(),
+        Err(_) => return -1,
+    };
+    with_handle(h, |h| {
+        let v: serde_json::Value = serde_json::from_str(&arg).map_err(|e| format!("json: {e}"))?;
+        let path_str = v
+            .get("path")
+            .and_then(|x| x.as_str())
+            .ok_or("missing path")?;
+        let path = PathBuf::from(path_str);
+        let target_str = v.get("target").and_then(|x| x.as_str()).unwrap_or("auto");
+        let target = if target_str.eq_ignore_ascii_case("auto") {
+            watcher::OutboxTarget::Auto
+        } else {
+            watcher::OutboxTarget::Device(target_str.to_string())
+        };
+        h.rt.block_on(h.node.add_sync_folder(path, target))
+            .map_err(|e| format!("add_sync_folder: {e}"))?;
+        Ok(0)
+    })
+    .unwrap_or(-1)
+}
+
+/// Remove a directory from continuously synchronized folders.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+/// Handle must come from [`db_init`]; `path` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn db_sync_folder_remove(h: *mut DbHandle, path: *const c_char) -> c_int {
+    let path = match cstr(path) {
+        Ok(s) => PathBuf::from(s),
+        Err(_) => return -1,
+    };
+    with_handle(h, |h| {
+        h.rt.block_on(h.node.remove_sync_folder(&path))
+            .map_err(|e| format!("remove_sync_folder: {e}"))?;
+        Ok(0)
+    })
+    .unwrap_or(-1)
+}
+
+/// List all configured sync folders as JSON array:
+/// `{"v": 1, "folders": [{"path": "...", "target": "auto", "enabled": true}]}`.
+///
+/// # Safety
+/// Handle must come from [`db_init`].
+#[no_mangle]
+pub unsafe extern "C" fn db_sync_folders_list(h: *mut DbHandle) -> *mut c_char {
+    with_handle(h, |h| {
+        let folders = h.node.list_sync_folders();
+        let list: Vec<serde_json::Value> = folders
+            .into_iter()
+            .map(|f| {
+                let tgt = match f.target {
+                    watcher::OutboxTarget::Auto => "auto".to_string(),
+                    watcher::OutboxTarget::Device(d) => d,
+                };
+                serde_json::json!({
+                    "path": f.path.to_string_lossy(),
+                    "target": tgt,
+                    "enabled": f.enabled,
+                })
+            })
+            .collect();
+        Ok(out_json(serde_json::json!({ "v": 1, "folders": list })))
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
 /// Wait up to `timeout_ms` for the next node event. Returns JSON or null on
 /// timeout. Long-poll this from the UI thread/isolate.
 ///
@@ -597,6 +676,15 @@ mod tests {
             )
             .is_null());
             assert_eq!(db_start_watcher(std::ptr::null_mut(), std::ptr::null()), -1);
+            assert_eq!(
+                db_sync_folder_add(std::ptr::null_mut(), std::ptr::null()),
+                -1
+            );
+            assert_eq!(
+                db_sync_folder_remove(std::ptr::null_mut(), std::ptr::null()),
+                -1
+            );
+            assert!(db_sync_folders_list(std::ptr::null_mut()).is_null());
             assert!(db_event(std::ptr::null_mut(), 10).is_null());
             db_shutdown(std::ptr::null_mut());
             db_free_string(std::ptr::null_mut());
@@ -703,6 +791,43 @@ mod tests {
             assert!(send_res.is_null());
             let err = CStr::from_ptr(db_last_error()).to_str().unwrap();
             assert!(err.contains("empty"));
+
+            // db_sync_folders_list initial (empty)
+            let list_p = db_sync_folders_list(h);
+            assert!(!list_p.is_null());
+            let list_s = CStr::from_ptr(list_p).to_str().unwrap();
+            let list_v: serde_json::Value = serde_json::from_str(list_s).unwrap();
+            assert_eq!(list_v["folders"].as_array().unwrap().len(), 0);
+            db_free_string(list_p);
+
+            // db_sync_folder_add
+            let sync_test_dir = tmp.path().join("ffi_sync_dir");
+            let add_req = serde_json::json!({
+                "path": sync_test_dir.to_str().unwrap(),
+                "target": "auto"
+            });
+            let add_c = CString::new(add_req.to_string()).unwrap();
+            assert_eq!(db_sync_folder_add(h, add_c.as_ptr()), 0);
+
+            // db_sync_folders_list after add (contains 1)
+            let list_p2 = db_sync_folders_list(h);
+            assert!(!list_p2.is_null());
+            let list_s2 = CStr::from_ptr(list_p2).to_str().unwrap();
+            let list_v2: serde_json::Value = serde_json::from_str(list_s2).unwrap();
+            assert_eq!(list_v2["folders"].as_array().unwrap().len(), 1);
+            db_free_string(list_p2);
+
+            // db_sync_folder_remove
+            let rem_c = CString::new(sync_test_dir.to_str().unwrap()).unwrap();
+            assert_eq!(db_sync_folder_remove(h, rem_c.as_ptr()), 0);
+
+            // db_sync_folders_list after remove (empty again)
+            let list_p3 = db_sync_folders_list(h);
+            assert!(!list_p3.is_null());
+            let list_s3 = CStr::from_ptr(list_p3).to_str().unwrap();
+            let list_v3: serde_json::Value = serde_json::from_str(list_s3).unwrap();
+            assert_eq!(list_v3["folders"].as_array().unwrap().len(), 0);
+            db_free_string(list_p3);
 
             // db_shutdown
             db_shutdown(h);

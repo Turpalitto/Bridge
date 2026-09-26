@@ -1,6 +1,7 @@
 //! The DropBridge node: identity, trust, endpoint, discovery, sessions.
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use crate::config::NodeConfig;
 use crate::events::NodeEvent;
 use crate::pairing::{self, PairingState};
 use crate::session;
+use crate::watcher;
 use crate::CoreError;
 
 pub struct Node {
@@ -41,6 +43,8 @@ pub struct Node {
     /// UI side of the pairing approval channel.
     pub(crate) pair_approval_sender: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
     pub(crate) router: Mutex<Option<Router>>,
+    pub(crate) sync_watchers: Mutex<HashMap<PathBuf, watcher::OutboxHandle>>,
+    pub(crate) sync_registry: Arc<crate::sync::SyncRegistry>,
     protector_name: String,
 }
 
@@ -82,6 +86,7 @@ impl Node {
 
         let peer_hints = Self::load_hints(&cfg.hints_path());
         let announce = cfg.announce;
+        let sync_registry = Arc::new(crate::sync::SyncRegistry::new(&cfg.state_dir));
         let node = Arc::new(Self {
             protector_name: protector.name().to_string(),
             cfg,
@@ -96,6 +101,8 @@ impl Node {
             pair_attempts: Mutex::new(HashMap::new()),
             pair_approval_sender: Mutex::new(None),
             router: Mutex::new(None),
+            sync_watchers: Mutex::new(HashMap::new()),
+            sync_registry,
         });
 
         // Router: transfer + pairing protocols by ALPN.
@@ -110,6 +117,18 @@ impl Node {
             )
             .spawn();
         *node.router.lock().await = Some(router);
+
+        // Start sync watchers for existing configured sync folders
+        let saved_sync = node.sync_registry.load();
+        for sf in saved_sync {
+            if sf.enabled {
+                if let Ok(w) =
+                    watcher::spawn_sync_watcher(Arc::clone(&node), sf.path.clone(), sf.target)
+                {
+                    node.sync_watchers.lock().await.insert(sf.path, w);
+                }
+            }
+        }
 
         if announce {
             let adv = dropbridge_discovery::SelfAdvertisement {
@@ -287,8 +306,45 @@ impl Node {
         Ok(())
     }
 
-    /// Gracefully close the underlying network endpoint.
+    /// Add or update a folder for continuous synchronization.
+    pub async fn add_sync_folder(
+        self: &Arc<Self>,
+        path: PathBuf,
+        target: watcher::OutboxTarget,
+    ) -> Result<(), CoreError> {
+        std::fs::create_dir_all(&path)?;
+        let folder = crate::sync::SyncFolder::new(path.clone(), target.clone());
+        self.sync_registry.add(folder)?;
+
+        let mut watchers = self.sync_watchers.lock().await;
+        if let Some(old) = watchers.remove(&path) {
+            old.stop();
+        }
+        let handle = watcher::spawn_sync_watcher(Arc::clone(self), path.clone(), target)?;
+        watchers.insert(path, handle);
+        Ok(())
+    }
+
+    /// Remove a folder from continuous synchronization.
+    pub async fn remove_sync_folder(&self, path: &Path) -> Result<bool, CoreError> {
+        let mut watchers = self.sync_watchers.lock().await;
+        if let Some(w) = watchers.remove(path) {
+            w.stop();
+        }
+        self.sync_registry.remove(path)
+    }
+
+    /// Return all configured sync folders.
+    pub fn list_sync_folders(&self) -> Vec<crate::sync::SyncFolder> {
+        self.sync_registry.load()
+    }
+
+    /// Gracefully close the underlying network endpoint and all active sync watchers.
     pub async fn close(&self) {
+        let mut watchers = self.sync_watchers.lock().await;
+        for (_, w) in watchers.drain() {
+            w.stop();
+        }
         self.endpoint.close().await;
     }
 }

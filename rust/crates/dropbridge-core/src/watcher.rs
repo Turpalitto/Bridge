@@ -86,7 +86,7 @@ fn is_file_locked(path: &Path) -> bool {
 }
 
 /// How to pick the destination phone.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum OutboxTarget {
     /// Trust the automatic choice: newest-seen trusted device that is not us.
     Auto,
@@ -224,6 +224,131 @@ pub fn spawn_outbox_watcher(
             }
         }
         debug!("outbox watcher stopped");
+    });
+
+    Ok(OutboxHandle { tx })
+}
+
+/// Start watching a folder for continuous synchronization.
+/// Unlike outbox watcher, files are NOT moved to `Sent/`.
+/// Instead, stable new/modified files are delivered and remembered in memory.
+pub fn spawn_sync_watcher(
+    node: Arc<Node>,
+    folder: PathBuf,
+    target: OutboxTarget,
+) -> Result<OutboxHandle, CoreError> {
+    std::fs::create_dir_all(&folder).map_err(CoreError::Io)?;
+    let (tx, mut rx) = watch::channel(true);
+
+    tokio::spawn(async move {
+        let mut seen: HashMap<PathBuf, (Snapshot, Option<Instant>)> = HashMap::new();
+        let mut synced: HashMap<PathBuf, Snapshot> = HashMap::new();
+        let mut failed_at: HashMap<PathBuf, Instant> = HashMap::new();
+        let mut backoff: HashMap<PathBuf, Duration> = HashMap::new();
+
+        while *rx.borrow_and_update() {
+            tokio::select! {
+                r = rx.changed() => {
+                    if r.is_err() || !*rx.borrow() { break; }
+                }
+                _ = tokio::time::sleep(POLL_EVERY) => {}
+            }
+
+            let items = match std::fs::read_dir(&folder) {
+                Ok(rd) => rd
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                            return false;
+                        };
+                        if name.starts_with('.') || name.ends_with(".dropbridge-part") {
+                            return false;
+                        }
+                        match std::fs::symlink_metadata(p) {
+                            Ok(m) => !m.is_symlink(),
+                            Err(_) => false,
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                Err(e) => {
+                    warn!(?e, "sync folder read failed");
+                    continue;
+                }
+            };
+
+            seen.retain(|k, _| items.contains(k));
+            synced.retain(|k, _| items.contains(k));
+
+            for item in items {
+                let snap = if item.is_dir() {
+                    dir_snapshot(&item)
+                } else {
+                    snapshot(&item)
+                };
+                let Some(snap) = snap else { continue };
+
+                if let Some(already) = synced.get(&item) {
+                    if *already == snap {
+                        continue;
+                    }
+                }
+
+                if let Some(at) = failed_at.get(&item) {
+                    let wait = backoff.get(&item).copied().unwrap_or(RETRY_BACKOFF);
+                    if at.elapsed() < wait {
+                        continue;
+                    }
+                }
+
+                let stable = matches!(seen.get(&item), Some((prev, _)) if *prev == snap);
+                let first_seen_old =
+                    matches!(seen.get(&item), Some((_, Some(t))) if t.elapsed() >= STABLE_GAP);
+
+                if !stable {
+                    seen.insert(
+                        item.clone(),
+                        (
+                            snap,
+                            seen.get(&item).and_then(|s| s.1).or(Some(Instant::now())),
+                        ),
+                    );
+                    continue;
+                }
+                if !first_seen_old {
+                    continue;
+                }
+                if is_file_locked(&item) {
+                    debug!(
+                        path = %item.display(),
+                        "sync folder item still being written to (locked); deferring transfer"
+                    );
+                    continue;
+                }
+
+                info!(path = %item.display(), "sync folder item stable — sending");
+                let res = deliver(&node, &item, &target).await;
+                match res {
+                    Ok(()) => {
+                        synced.insert(item.clone(), snap);
+                        failed_at.remove(&item);
+                        backoff.remove(&item);
+                        info!(path = %item.display(), "sync folder delivery ok");
+                    }
+                    Err(e) => {
+                        warn!(?e, path = %item.display(), "sync folder delivery failed; will retry");
+                        failed_at.insert(item.clone(), Instant::now());
+                        let cur = backoff.get(&item).copied().unwrap_or(RETRY_BACKOFF);
+                        backoff.insert(item, (cur * 2).min(MAX_BACKOFF));
+                        node.emit(NodeEvent::TransferFailed {
+                            session: 0,
+                            reason: format!("sync: {e}"),
+                        });
+                    }
+                }
+            }
+        }
+        debug!("sync watcher stopped");
     });
 
     Ok(OutboxHandle { tx })

@@ -34,6 +34,12 @@ typedef _EventDart = Pointer<Utf8> Function(Pointer<Void> h, int timeoutMs);
 typedef _WatcherC = Int32 Function(Pointer<Void> h, Pointer<Utf8> outbox);
 typedef _WatcherDart = int Function(Pointer<Void> h, Pointer<Utf8> outbox);
 
+typedef _SyncAddC = Int32 Function(Pointer<Void> h, Pointer<Utf8> folderJson);
+typedef _SyncAddDart = int Function(Pointer<Void> h, Pointer<Utf8> folderJson);
+
+typedef _SyncRemoveC = Int32 Function(Pointer<Void> h, Pointer<Utf8> path);
+typedef _SyncRemoveDart = int Function(Pointer<Void> h, Pointer<Utf8> path);
+
 typedef _ShutdownC = Void Function(Pointer<Void> h);
 typedef _ShutdownDart = void Function(Pointer<Void> h);
 
@@ -67,6 +73,9 @@ class DropBridgeCore {
   late final _send = _lib.lookupFunction<_SendC, _SendDart>('db_send');
   late final _event = _lib.lookupFunction<_EventC, _EventDart>('db_event');
   late final _watcher = _lib.lookupFunction<_WatcherC, _WatcherDart>('db_start_watcher');
+  late final _syncFolderAdd = _lib.lookupFunction<_SyncAddC, _SyncAddDart>('db_sync_folder_add');
+  late final _syncFolderRemove = _lib.lookupFunction<_SyncRemoveC, _SyncRemoveDart>('db_sync_folder_remove');
+  late final _syncFoldersList = _lib.lookupFunction<_StrFnC, _StrFnDart>('db_sync_folders_list');
   late final _shutdown = _lib.lookupFunction<_ShutdownC, _ShutdownDart>('db_shutdown');
   late final _lastError = _lib.lookupFunction<_LastErrorC, _LastErrorDart>('db_last_error');
   late final _free = _lib.lookupFunction<_FreeC, _FreeDart>('db_free_string');
@@ -172,6 +181,32 @@ class DropBridgeCore {
     final r = _watcher(_h, arg);
     calloc.free(arg);
     if (r != 0) throw DropBridgeError(_lastErr());
+  }
+
+  Future<void> addSyncFolder(String path, {String target = 'auto'}) async {
+    final arg = _c(jsonEncode({'path': path, 'target': target}));
+    try {
+      final r = _syncFolderAdd(_h, arg);
+      if (r != 0) throw DropBridgeError(_lastErr());
+    } finally {
+      calloc.free(arg);
+    }
+  }
+
+  Future<void> removeSyncFolder(String path) async {
+    final arg = _c(path);
+    try {
+      final r = _syncFolderRemove(_h, arg);
+      if (r != 0) throw DropBridgeError(_lastErr());
+    } finally {
+      calloc.free(arg);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> listSyncFolders() async {
+    final j = await runBlocking(() => _takeJson(_syncFoldersList(_h)));
+    final list = (j['folders'] as List?) ?? const [];
+    return list.cast<Map<String, dynamic>>();
   }
 
   /// One event, waiting up to [timeoutMs]. Returns null on timeout.

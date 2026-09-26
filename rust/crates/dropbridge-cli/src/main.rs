@@ -80,6 +80,30 @@ enum Cmd {
         #[command(subcommand)]
         action: ShellSubcommand,
     },
+    /// Manage continuously synchronized folders
+    Sync {
+        #[command(subcommand)]
+        action: SyncSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncSubcommand {
+    /// Add a directory for continuous automatic synchronization
+    Add {
+        /// Local directory path to synchronize
+        path: PathBuf,
+        /// Target device name, id prefix, or 'auto' (default: auto)
+        #[arg(long, default_value = "auto")]
+        target: String,
+    },
+    /// Remove a directory from synchronization
+    Remove {
+        /// Local directory path to remove
+        path: PathBuf,
+    },
+    /// List all configured sync folders
+    List,
 }
 
 #[derive(Subcommand)]
@@ -290,6 +314,13 @@ async fn main() -> Result<()> {
                 dropbridge_core::watcher::OutboxTarget::Auto,
             )?;
             println!("Watching outbox: {}", outbox.display());
+            let sync_folders = node.list_sync_folders();
+            if !sync_folders.is_empty() {
+                println!("Active sync folders ({}):", sync_folders.len());
+                for f in &sync_folders {
+                    println!("  • {}", f.path.display());
+                }
+            }
             let mut events = node.events();
             let mut last_progress_print = std::time::Instant::now() - Duration::from_secs(2);
             let mut acc_bytes = 0u64;
@@ -461,6 +492,63 @@ async fn main() -> Result<()> {
             }
             ShellSubcommand::Status => shell::handle_shell_integration(shell::ShellAction::Status)?,
         },
+        Cmd::Sync { action } => {
+            let cfg = make_config(&cli);
+            let registry = dropbridge_core::sync::SyncRegistry::new(&cfg.state_dir);
+            match action {
+                SyncSubcommand::Add { path, target } => {
+                    let abs_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        std::env::current_dir()?.join(path)
+                    };
+                    std::fs::create_dir_all(&abs_path)?;
+                    let tgt = if target.eq_ignore_ascii_case("auto") {
+                        dropbridge_core::watcher::OutboxTarget::Auto
+                    } else {
+                        dropbridge_core::watcher::OutboxTarget::Device(target.clone())
+                    };
+                    let sf = dropbridge_core::sync::SyncFolder::new(abs_path.clone(), tgt);
+                    registry.add(sf)?;
+                    println!("✓ Added sync folder: {}", abs_path.display());
+                    println!("  Target: {target}");
+                    println!("  Changes in this folder will be automatically synchronized.");
+                }
+                SyncSubcommand::Remove { path } => {
+                    let abs_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        std::env::current_dir()?.join(path)
+                    };
+                    if registry.remove(&abs_path)? {
+                        println!("✓ Removed sync folder: {}", abs_path.display());
+                    } else {
+                        println!("Folder was not found in sync list: {}", abs_path.display());
+                    }
+                }
+                SyncSubcommand::List => {
+                    let list = registry.load();
+                    if list.is_empty() {
+                        println!("No sync folders configured.");
+                        println!("Run `dropbridge sync add <path>` to add one.");
+                    } else {
+                        println!("Configured sync folders ({}):", list.len());
+                        for f in list {
+                            let tgt_str = match &f.target {
+                                dropbridge_core::watcher::OutboxTarget::Auto => "auto",
+                                dropbridge_core::watcher::OutboxTarget::Device(d) => d.as_str(),
+                            };
+                            println!(
+                                "  • {} (target: {}, enabled: {})",
+                                f.path.display(),
+                                tgt_str,
+                                f.enabled
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
