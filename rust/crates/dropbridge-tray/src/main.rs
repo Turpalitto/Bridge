@@ -94,7 +94,7 @@ mod win {
                 .chain(std::iter::once(0))
                 .collect::<Vec<u16>>()
         };
-        let key_path = wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+        let key_path = wide(autostart_key());
         let value_name = wide("DropBridge");
         unsafe {
             let mut hk: HKEY = std::ptr::null_mut();
