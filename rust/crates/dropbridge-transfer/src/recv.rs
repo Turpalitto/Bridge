@@ -457,6 +457,7 @@ pub fn free_space(path: &Path) -> Result<u64, RecvError> {
         Ok(st.blocks_available() as u64 * st.fragment_size() as u64)
     }
     #[cfg(windows)]
+    #[allow(unsafe_code)]
     {
         use std::os::windows::ffi::OsStrExt;
         let mut path_wide: Vec<u16> = probe.as_os_str().encode_wide().collect();

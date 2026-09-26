@@ -4,8 +4,8 @@
 //! key is the device id and the network address (iroh's dial-by-key model).
 //! The private key never leaves the device; at rest it is wrapped by a
 //! platform [`SecretProtector`] (Android Keystore / Windows DPAPI in shipped
-//! apps, chmod-0600 file fallback for CLI/development).
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 pub mod protector;
 pub mod trust;

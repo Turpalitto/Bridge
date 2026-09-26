@@ -160,16 +160,17 @@ impl SecretProtector for DpapiProtector {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, IdentityError> {
-    use windows_sys::Win32::Foundation::DATA_BLOB;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN,
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    let mut in_blob = DATA_BLOB {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: data.len() as u32,
         pbData: data.as_ptr() as *mut u8,
     };
-    let mut out_blob = DATA_BLOB {
+    let mut out_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
     };
@@ -201,7 +202,7 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, IdentityError> {
     }
     let out =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) }.to_vec();
-    unsafe { windows_sys::Win32::System::Memory::LocalFree(out_blob.pbData as isize) };
+    unsafe { LocalFree(out_blob.pbData as _) };
     Ok(out)
 }
 

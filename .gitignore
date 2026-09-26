@@ -18,3 +18,5 @@ app/flutter/ephemeral/
 **/local.properties
 *.apk
 *.apk.sha256
+*.zip
+*.zip.sha256

@@ -13,8 +13,8 @@
 //!
 //! The engine is transport-agnostic: it produces/consumes chunk jobs over the
 //! [`transport`] traits so it can run over iroh QUIC streams in production
-//! and over in-memory pipes in tests.
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 pub mod adaptive;
 pub mod compression;
