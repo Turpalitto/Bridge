@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import androidx.activity.result.contract.ActivityResultContracts
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -38,12 +37,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private val pickDocs =
-        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-            val staged = uris?.mapNotNull { stageUri(it) } ?: emptyList()
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_PICK) {
+            val staged = ArrayList<String>()
+            data?.clipData?.let { clip ->
+                for (i in 0 until clip.itemCount) {
+                    stageUri(clip.getItemAt(i).uri)?.let(staged::add)
+                }
+            } ?: data?.data?.let { uri ->
+                stageUri(uri)?.let(staged::add)
+            }
             pickCallback?.success(staged)
             pickCallback = null
         }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -53,7 +61,12 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "pick" -> {
                     pickCallback = result
-                    pickDocs.launch(arrayOf("*/*"))
+                    val pickIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
+                    startActivityForResult(pickIntent, REQ_PICK)
                 }
                 "getHardwareKey" -> {
                     val protector = AndroidKeyStoreProtector(this)
@@ -192,6 +205,7 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        private const val REQ_PICK = 1001
         const val EXTRA_STAGED_PATHS = "dropbridge.staged_paths"
     }
 }

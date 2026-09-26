@@ -14,3 +14,7 @@ app/flutter/ephemeral/
 *.dll
 *.exe
 **/jniLibs/
+.gradle/
+**/local.properties
+*.apk
+*.apk.sha256

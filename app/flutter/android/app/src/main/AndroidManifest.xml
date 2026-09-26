@@ -17,6 +17,10 @@
         android:label="DropBridge"
         android:enableOnBackInvokedCallback="true">
 
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
         <!-- Main UI -->
         <activity
             android:name=".MainActivity"
