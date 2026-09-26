@@ -1,0 +1,23 @@
+[package]
+name = "dropbridge-bench"
+description = "Benchmark tool: disk, hashing, loopback transfers, stream-count matrix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dropbridge-bench"
+path = "src/main.rs"
+
+[dependencies]
+dropbridge-core = { path = "../dropbridge-core" }
+dropbridge-transfer = { path = "../dropbridge-transfer" }
+dropbridge-protocol = { path = "../dropbridge-protocol" }
+dropbridge-network = { path = "../dropbridge-network" }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tempfile = { workspace = true }
+zstd = { workspace = true }

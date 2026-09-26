@@ -1,0 +1,23 @@
+[package]
+name = "dropbridge-discovery"
+description = "LAN discovery: mDNS/DNS-SD + DropBridge UDP beacon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dropbridge-protocol = { path = "../dropbridge-protocol" }
+dropbridge-identity = { path = "../dropbridge-identity" }
+tokio = { workspace = true }
+mdns-sd = { workspace = true, features = ["async"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+data-encoding = { workspace = true }
+postcard = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

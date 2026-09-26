@@ -1,0 +1,4 @@
+# Replace relay.example.com with your domain; Caddy obtains Let's Encrypt certs.
+relay.example.com {
+    reverse_proxy relay:8080
+}

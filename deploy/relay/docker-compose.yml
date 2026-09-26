@@ -1,0 +1,25 @@
+# Self-hosted DropBridge relay (spec §21).
+# Put TLS in front (the client RelayUrl must be https:// in production);
+# a Caddy example is included.
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/relay/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"     # relay HTTP (behind TLS proxy)
+      - "9090:9090"               # metrics (scrape this; keep private!)
+    command: ["--bind", "0.0.0.0:8080", "--metrics", "0.0.0.0:9090", "--rate-limit-mbps", "1000"]
+
+  tls:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [relay]
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+volumes:
+  caddy_data: {}

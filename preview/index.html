@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DropBridge — Интерактивное превью (Android & Windows 11)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Segoe+UI:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-container: #dbeafe;
+      --on-primary-container: #1e3a8a;
+      --surface: #f8fafc;
+      --surface-variant: #e2e8f0;
+      --card-bg: #ffffff;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --win-bg: #1e1e2e;
+      --win-card: #28283d;
+      --win-blue: #0078d4;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #0b0f19;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header.top-bar {
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #60a5fa;
+    }
+    .view-toggles {
+      display: flex;
+      background: #1f2937;
+      padding: 4px;
+      border-radius: 10px;
+      gap: 4px;
+    }
+    .toggle-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .toggle-btn.active {
+      background: #2563eb;
+      color: white;
+    }
+    .workspace {
+      flex: 1;
+      display: flex;
+      gap: 32px;
+      justify-content: center;
+      align-items: center;
+      padding: 32px 16px;
+      overflow-x: auto;
+    }
+
+    /* PHONE FRAME (Material 3) */
+    .phone-wrapper {
+      width: 375px;
+      height: 760px;
+      background: #000;
+      border-radius: 46px;
+      padding: 12px;
+      box-shadow: 0 25px 60px -15px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.1);
+      position: relative;
+      flex-shrink: 0;
+      transition: transform 0.3s;
+    }
+    .phone-screen {
+      width: 100%;
+      height: 100%;
+      background: #f8fafc;
+      color: #0f172a;
+      border-radius: 36px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .camera-punch {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 14px;
+      height: 14px;
+      background: #000;
+      border-radius: 50%;
+      z-index: 50;
+    }
+    .status-bar {
+      height: 38px;
+      padding: 8px 24px 0 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #334155;
+      background: #ffffff;
+      z-index: 10;
+    }
+    .status-bar-icons {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .phone-app-bar {
+      background: #ffffff;
+      padding: 8px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .phone-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #1e293b;
+    }
+    .phone-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .icon-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #334155;
+      border-radius: 50%;
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+    .icon-btn:hover {
+      background: #f1f5f9;
+    }
+    .phone-content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .transfer-card {
+      margin: 14px 16px 6px 16px;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+      padding: 16px;
+      border-radius: 20px;
+      box-shadow: 0 4px 12px rgba(37,99,235,0.12);
+      display: none;
+    }
+    .transfer-card.active {
+      display: block;
+      animation: slideDown 0.3s ease;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .transfer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .transfer-progress-bar {
+      height: 8px;
+      background: rgba(37,99,235,0.2);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .transfer-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: #2563eb;
+      border-radius: 6px;
+      transition: width 0.2s ease;
+    }
+    .transfer-footer {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .status-row {
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.82rem;
+      color: #475569;
+    }
+    .devices-list {
+      padding: 0 14px;
+      flex: 1;
+    }
+    .device-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .device-card:hover {
+      border-color: #cbd5e1;
+      transform: translateY(-1px);
+    }
+    .device-avatar {
+      width: 44px;
+      height: 44px;
+      background: #eff6ff;
+      color: #2563eb;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .device-info {
+      flex: 1;
+    }
+    .device-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #1e293b;
+    }
+    .device-type {
+      font-size: 0.78rem;
+      color: #64748b;
+    }
+    .btn-tonal {
+      background: #eff6ff;
+      color: #2563eb;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-tonal:hover {
+      background: #dbeafe;
+    }
+    .log-box {
+      height: 110px;
+      background: #f1f5f9;
+      border-top: 1px solid #e2e8f0;
+      padding: 8px 12px;
+      font-family: monospace;
+      font-size: 0.7rem;
+      color: #334155;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column-reverse;
+    }
+    .fab {
+      position: absolute;
+      right: 20px;
+      bottom: 125px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 28px;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 0.88rem;
+      box-shadow: 0 8px 20px rgba(37,99,235,0.35);
+      cursor: pointer;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .fab:hover {
+      background: #1d4ed8;
+      transform: scale(1.03);
+    }
+
+    /* BOTTOM SHEET */
+    .bottom-sheet-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      border-radius: 36px;
+      display: none;
+      align-items: flex-end;
+      z-index: 60;
+    }
+    .bottom-sheet-overlay.active {
+      display: flex;
+    }
+    .bottom-sheet {
+      background: white;
+      width: 100%;
+      border-radius: 24px 24px 0 0;
+      padding: 18px 20px;
+      animation: sheetUp 0.25s ease;
+    }
+    @keyframes sheetUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    .sheet-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    /* DIALOG MODAL */
+    .modal-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      border-radius: 36px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 70;
+      padding: 20px;
+    }
+    .modal-overlay.active {
+      display: flex;
+    }
+    .modal-card {
+      background: white;
+      border-radius: 20px;
+      padding: 20px;
+      width: 100%;
+      text-align: center;
+    }
+    .modal-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: #0f172a;
+    }
+    .qr-container {
+      background: #f8fafc;
+      border: 1px dashed #cbd5e1;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* WINDOWS 11 SIMULATION */
+    .win-wrapper {
+      width: 580px;
+      height: 760px;
+      background: #1e1e2e;
+      border-radius: 16px;
+      box-shadow: 0 25px 60px -15px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .win-titlebar {
+      height: 40px;
+      background: #181825;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 14px;
+      border-bottom: 1px solid #313244;
+      font-size: 0.82rem;
+      color: #cdd6f4;
+    }
+    .win-buttons {
+      display: flex;
+      gap: 12px;
+      color: #a6adc8;
+    }
+    .win-desktop {
+      flex: 1;
+      padding: 20px;
+      background: radial-gradient(circle at 80% 20%, #313244 0%, #1e1e2e 70%);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .win-explorer-window {
+      background: #24273a;
+      border: 1px solid #363a4f;
+      border-radius: 10px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .explorer-toolbar {
+      padding: 10px 14px;
+      background: #1e2030;
+      border-bottom: 1px solid #363a4f;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.8rem;
+      color: #b8c0e0;
+    }
+    .explorer-files {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      position: relative;
+    }
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #cad3f5;
+      transition: background 0.15s;
+    }
+    .file-row:hover, .file-row.selected {
+      background: #363a4f;
+    }
+    .file-icon {
+      color: #8aadf4;
+    }
+
+    /* WINDOWS 11 CONTEXT MENU */
+    .context-menu {
+      position: absolute;
+      top: 60px;
+      left: 120px;
+      background: #181926;
+      border: 1px solid #494d64;
+      border-radius: 8px;
+      padding: 6px;
+      width: 260px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.7);
+      display: none;
+      z-index: 40;
+    }
+    .context-menu.active {
+      display: block;
+      animation: pop 0.15s ease;
+    }
+    @keyframes pop {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .context-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      font-size: 0.82rem;
+      color: #cad3f5;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .context-item:hover {
+      background: #24273a;
+    }
+    .context-item.highlight {
+      color: #8aadf4;
+      font-weight: 600;
+      background: rgba(138, 173, 244, 0.1);
+    }
+    .context-divider {
+      height: 1px;
+      background: #363a4f;
+      margin: 4px 0;
+    }
+
+    /* WINDOWS TOAST NOTIFICATION */
+    .win-toast {
+      position: absolute;
+      bottom: 60px;
+      right: 20px;
+      background: #181926;
+      border: 1px solid #494d64;
+      border-radius: 8px;
+      padding: 14px 16px;
+      width: 320px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      display: none;
+      z-index: 50;
+    }
+    .win-toast.active {
+      display: block;
+      animation: toastIn 0.3s ease;
+    }
+    @keyframes toastIn {
+      from { transform: translateX(100%); }
+      to { transform: translateX(0); }
+    }
+    .toast-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #8aadf4;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .toast-body {
+      font-size: 0.78rem;
+      color: #a5adcb;
+    }
+
+    /* TASKBAR */
+    .win-taskbar {
+      height: 48px;
+      background: #181825;
+      border-top: 1px solid #313244;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 16px;
+    }
+    .taskbar-center {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .taskbar-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #b8c0e0;
+      transition: background 0.15s;
+    }
+    .taskbar-icon:hover, .taskbar-icon.active {
+      background: #313244;
+    }
+    .taskbar-tray {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.75rem;
+      color: #a6adc8;
+    }
+    .tray-dropbridge {
+      color: #8aadf4;
+      background: rgba(138, 173, 244, 0.15);
+      border-radius: 4px;
+      padding: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="top-bar">
+    <div class="brand">
+      <span class="material-symbols-outlined" style="font-size:28px;">swap_horizontal_circle</span>
+      DropBridge — Интерактивное превью релиза 2026
+    </div>
+    <div class="view-toggles">
+      <button class="toggle-btn active" id="btnSplit" onclick="setView('split')">Сплит (Android + Windows)</button>
+      <button class="toggle-btn" id="btnPhone" onclick="setView('phone')">Смартфон Android</button>
+      <button class="toggle-btn" id="btnWin" onclick="setView('windows')">Windows 11 ПК</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+
+    <!-- ANDROID SMARTPHONE VIEW -->
+    <div class="phone-wrapper" id="phoneWrapper">
+      <div class="phone-screen">
+        <div class="camera-punch"></div>
+
+        <!-- Android Status Bar -->
+        <div class="status-bar">
+          <span id="phoneClock">14:30</span>
+          <div class="status-bar-icons">
+            <span class="material-symbols-outlined" style="font-size:16px;">wifi</span>
+            <span class="material-symbols-outlined" style="font-size:16px;">network_cell</span>
+            <span class="material-symbols-outlined" style="font-size:16px;">battery_full</span>
+          </div>
+        </div>
+
+        <!-- Phone App Bar -->
+        <div class="phone-app-bar">
+          <div class="phone-title">DropBridge</div>
+          <div class="phone-actions">
+            <button class="icon-btn" title="Ввести ключ сопряжения" onclick="openJoinDialog()">
+              <span class="material-symbols-outlined">qr_code_scanner</span>
+            </button>
+            <button class="icon-btn" title="Показать код сопряжения" onclick="openQrDialog()">
+              <span class="material-symbols-outlined">qr_code_2</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Phone Content -->
+        <div class="phone-content">
+
+          <!-- Live Transfer Card -->
+          <div class="transfer-card" id="transferCard">
+            <div class="transfer-header">
+              <span id="transferPeerText">Передача: ПК-Windows11</span>
+              <span id="transferSpeedText" style="color:#2563eb;">84.5 МБ/с</span>
+            </div>
+            <div class="transfer-progress-bar">
+              <div class="transfer-progress-fill" id="transferFill"></div>
+            </div>
+            <div class="transfer-footer">
+              <span id="transferBytesText">120 МБ / 350 МБ</span>
+              <span id="transferPercentText">34%</span>
+            </div>
+          </div>
+
+          <!-- Status & Refresh -->
+          <div class="status-row">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="material-symbols-outlined" style="font-size:18px; color:#2563eb;">devices</span>
+              <span id="statusLabel" style="font-weight:500;">Сопряжённых устройств: 1</span>
+            </div>
+            <button class="btn-tonal" style="padding:4px 10px; font-size:0.75rem;" onclick="refreshDevices()">
+              <span class="material-symbols-outlined" style="font-size:14px;">refresh</span>
+              Обновить
+            </button>
+          </div>
+
+          <!-- Paired Devices List -->
+          <div class="devices-list">
+            <div class="device-card">
+              <div class="device-avatar">
+                <span class="material-symbols-outlined">desktop_windows</span>
+              </div>
+              <div class="device-info">
+                <div class="device-name">ПК-Windows11</div>
+                <div class="device-type">Компьютер (ПК) • В сети (Wi-Fi 6)</div>
+              </div>
+              <button class="btn-tonal" onclick="startPhoneToSend()">
+                <span class="material-symbols-outlined" style="font-size:16px;">upload</span>
+                Отправить
+              </button>
+            </div>
+          </div>
+
+          <!-- Bottom Console Log -->
+          <div class="log-box" id="logBox">
+            <div>✓ Драйвер Wi-Fi Direct активен</div>
+            <div>✓ Аппаратный ключ защищён StrongBox Keystore</div>
+            <div>[DropBridge] Готов к передаче на скорости до 1.2 Гбит/с</div>
+          </div>
+
+        </div>
+
+        <!-- Floating Action Button -->
+        <button class="fab" onclick="openBottomSheet()">
+          <span class="material-symbols-outlined">add</span>
+          Отправить файлы
+        </button>
+
+        <!-- Material 3 Bottom Sheet -->
+        <div class="bottom-sheet-overlay" id="bottomSheet" onclick="closeBottomSheet(event)">
+          <div class="bottom-sheet" onclick="event.stopPropagation()">
+            <div class="sheet-title">
+              <span class="material-symbols-outlined" style="color:#2563eb;">send_to_mobile</span>
+              Отправить 3 файл(ов) на:
+            </div>
+            <div class="device-card" style="margin-bottom:0; cursor:pointer;" onclick="selectDeviceFromSheet('ПК-Windows11')">
+              <div class="device-avatar">
+                <span class="material-symbols-outlined">desktop_windows</span>
+              </div>
+              <div class="device-info">
+                <div class="device-name">ПК-Windows11</div>
+                <div class="device-type">Компьютер (ПК)</div>
+              </div>
+              <span class="material-symbols-outlined" style="color:#94a3b8;">arrow_forward_ios</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- QR Dialog -->
+        <div class="modal-overlay" id="qrModal" onclick="closeQrDialog(event)">
+          <div class="modal-card" onclick="event.stopPropagation()">
+            <div class="modal-title">Сопряжение с компьютером</div>
+            <div class="qr-container">
+              <svg width="150" height="150" viewBox="0 0 100 100">
+                <rect width="100" height="100" fill="#fff"/>
+                <rect x="10" y="10" width="30" height="30" fill="#000"/>
+                <rect x="15" y="15" width="20" height="20" fill="#fff"/>
+                <rect x="20" y="20" width="10" height="10" fill="#000"/>
+                <rect x="60" y="10" width="30" height="30" fill="#000"/>
+                <rect x="65" y="15" width="20" height="20" fill="#fff"/>
+                <rect x="70" y="20" width="10" height="10" fill="#000"/>
+                <rect x="10" y="60" width="30" height="30" fill="#000"/>
+                <rect x="15" y="65" width="20" height="20" fill="#fff"/>
+                <rect x="20" y="70" width="10" height="10" fill="#000"/>
+                <rect x="50" y="50" width="10" height="10" fill="#000"/>
+                <rect x="70" y="50" width="10" height="10" fill="#000"/>
+                <rect x="50" y="70" width="10" height="10" fill="#000"/>
+                <rect x="70" y="70" width="10" height="10" fill="#000"/>
+                <rect x="80" y="80" width="10" height="10" fill="#000"/>
+              </svg>
+            </div>
+            <div style="font-size:0.75rem; color:#64748b; margin-bottom:14px;">
+              Отсканируйте этот QR-код в DropBridge на ПК с Windows 11 или скопируйте код.
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-tonal" style="flex:1; justify-content:center;" onclick="copyCode()">
+                <span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>
+                Скопировать код
+              </button>
+              <button class="btn-tonal" style="background:#f1f5f9; color:#475569;" onclick="closeQrDialog()">Закрыть</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- WINDOWS 11 SIMULATION VIEW -->
+    <div class="win-wrapper" id="winWrapper">
+      <!-- Titlebar -->
+      <div class="win-titlebar">
+        <span>Проводник — Загрузки \ DropBridge</span>
+        <div class="win-buttons">
+          <span>—</span>
+          <span>▢</span>
+          <span>✕</span>
+        </div>
+      </div>
+
+      <!-- Desktop Body -->
+      <div class="win-desktop">
+        <div class="win-explorer-window">
+          <div class="explorer-toolbar">
+            <span class="material-symbols-outlined" style="font-size:18px;">arrow_back</span>
+            <span class="material-symbols-outlined" style="font-size:18px;">arrow_forward</span>
+            <span class="material-symbols-outlined" style="font-size:18px;">refresh</span>
+            <span>Этот компьютер &gt; Загрузки &gt; DropBridge</span>
+          </div>
+
+          <div class="explorer-files" id="explorerFiles" onclick="hideContextMenu()">
+            <div class="file-row selected" onclick="showContextMenu(event)">
+              <span class="material-symbols-outlined file-icon">video_file</span>
+              <span style="flex:1;">presentation_video_4k.mp4</span>
+              <span style="color:#a6adc8; font-size:0.75rem;">350 МБ</span>
+            </div>
+            <div class="file-row" onclick="showContextMenu(event)">
+              <span class="material-symbols-outlined file-icon">folder_zip</span>
+              <span style="flex:1;">project_source_archive.zip</span>
+              <span style="color:#a6adc8; font-size:0.75rem;">1.2 ГБ</span>
+            </div>
+            <div class="file-row" onclick="showContextMenu(event)">
+              <span class="material-symbols-outlined file-icon">image</span>
+              <span style="flex:1;">family_photo_raw.dng</span>
+              <span style="color:#a6adc8; font-size:0.75rem;">48 МБ</span>
+            </div>
+
+            <!-- Windows 11 Context Menu -->
+            <div class="context-menu" id="contextMenu">
+              <div class="context-item highlight" onclick="startWinToSend()">
+                <span class="material-symbols-outlined" style="font-size:18px; color:#8aadf4;">swap_horizontal_circle</span>
+                Отправить через DropBridge
+              </div>
+              <div class="context-divider"></div>
+              <div class="context-item">
+                <span class="material-symbols-outlined" style="font-size:16px;">content_cut</span>
+                Вырезать
+              </div>
+              <div class="context-item">
+                <span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>
+                Копировать
+              </div>
+              <div class="context-item">
+                <span class="material-symbols-outlined" style="font-size:16px;">delete</span>
+                Удалить
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Windows Toast Notification -->
+        <div class="win-toast" id="winToast">
+          <div class="toast-title">
+            <span class="material-symbols-outlined" style="font-size:18px;">swap_horizontal_circle</span>
+            DropBridge
+          </div>
+          <div class="toast-body" id="toastMessage">
+            Файлы успешно получены от Смартфон! (350 МБ со скоростью 84 МБ/с).
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Windows Taskbar -->
+      <div class="win-taskbar">
+        <div class="taskbar-center">
+          <div class="taskbar-icon"><span class="material-symbols-outlined" style="color:#00a4ef;">window</span></div>
+          <div class="taskbar-icon"><span class="material-symbols-outlined">search</span></div>
+          <div class="taskbar-icon active"><span class="material-symbols-outlined" style="color:#f9e2af;">folder</span></div>
+        </div>
+        <div class="taskbar-tray">
+          <div class="tray-dropbridge" title="DropBridge: В сети, готов к приёму" onclick="simulateTrayClick()">
+            <span class="material-symbols-outlined" style="font-size:18px;">swap_horizontal_circle</span>
+          </div>
+          <span>РУС</span>
+          <span>14:30</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    function updateClock() {
+      const now = new Date();
+      const time = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      document.getElementById('phoneClock').innerText = time;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    function setView(mode) {
+      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
+      document.getElementById('btnPhone').classList.toggle('active', mode === 'phone');
+      document.getElementById('btnWin').classList.toggle('active', mode === 'windows');
+
+      const phone = document.getElementById('phoneWrapper');
+      const win = document.getElementById('winWrapper');
+
+      if (mode === 'split') {
+        phone.style.display = 'block';
+        win.style.display = 'flex';
+      } else if (mode === 'phone') {
+        phone.style.display = 'block';
+        win.style.display = 'none';
+      } else {
+        phone.style.display = 'none';
+        win.style.display = 'flex';
+      }
+    }
+
+    function addLog(msg) {
+      const box = document.getElementById('logBox');
+      const d = document.createElement('div');
+      d.innerText = msg;
+      box.insertBefore(d, box.firstChild);
+    }
+
+    function refreshDevices() {
+      addLog('Обновление списка устройств в локальной сети…');
+      setTimeout(() => {
+        addLog('✓ ПК-Windows11 обнаружен по Wi-Fi Direct (RTT: 4 мс)');
+      }, 300);
+    }
+
+    // Modal controls
+    function openQrDialog() {
+      document.getElementById('qrModal').classList.add('active');
+    }
+    function closeQrDialog(e) {
+      document.getElementById('qrModal').classList.remove('active');
+    }
+    function copyCode() {
+      addLog('✓ Код сопряжения скопирован в буфер обмена');
+      closeQrDialog();
+    }
+    function openJoinDialog() {
+      const code = prompt('Вставьте ключ сопряжения:', 'dropbridge://pair?v=1&k=z32pk_91f4a...');
+      if (code) {
+        addLog('✓ Сопряжение выполнено успешно');
+      }
+    }
+
+    // Bottom sheet
+    function openBottomSheet() {
+      document.getElementById('bottomSheet').classList.add('active');
+    }
+    function closeBottomSheet() {
+      document.getElementById('bottomSheet').classList.remove('active');
+    }
+    function selectDeviceFromSheet(device) {
+      closeBottomSheet();
+      startPhoneToSend();
+    }
+
+    // Transfer simulation
+    let isTransferring = false;
+    function startPhoneToSend() {
+      if (isTransferring) return;
+      isTransferring = true;
+
+      const card = document.getElementById('transferCard');
+      const fill = document.getElementById('transferFill');
+      const speed = document.getElementById('transferSpeedText');
+      const bytes = document.getElementById('transferBytesText');
+      const pct = document.getElementById('transferPercentText');
+
+      card.classList.add('active');
+      addLog('Запуск высокоскоростной QUIC передачи на ПК-Windows11…');
+
+      let progress = 0;
+      const total = 350;
+      const interval = setInterval(() => {
+        progress += 7;
+        const currentMB = Math.min(total, (progress / 100) * total);
+        const curPct = Math.min(100, progress);
+
+        fill.style.width = curPct + '%';
+        pct.innerText = curPct + '%';
+        bytes.innerText = currentMB.toFixed(0) + ' МБ / ' + total + ' МБ';
+        speed.innerText = (80 + Math.random() * 15).toFixed(1) + ' МБ/с';
+
+        if (progress >= 100) {
+          clearInterval(interval);
+          isTransferring = false;
+          setTimeout(() => {
+            card.classList.remove('active');
+            addLog('✓ Передача 350 МБ успешно завершена');
+            showWindowsToast('Получен файл presentation_video_4k.mp4 (350 МБ) от Смартфон');
+          }, 600);
+        }
+      }, 150);
+    }
+
+    // Windows interactions
+    function showContextMenu(e) {
+      e.stopPropagation();
+      const menu = document.getElementById('contextMenu');
+      menu.classList.add('active');
+    }
+    function hideContextMenu() {
+      document.getElementById('contextMenu').classList.remove('active');
+    }
+
+    function startWinToSend() {
+      hideContextMenu();
+      showWindowsToast('Отправка presentation_video_4k.mp4 на Смартфон…');
+      startPhoneToSend();
+    }
+
+    function showWindowsToast(text) {
+      const toast = document.getElementById('winToast');
+      document.getElementById('toastMessage').innerText = text;
+      toast.classList.add('active');
+      setTimeout(() => {
+        toast.classList.remove('active');
+      }, 4000);
+    }
+
+    function simulateTrayClick() {
+      showWindowsToast('DropBridge активен в трее. Готов к приёму файлов.');
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[package]
+name = "dropbridge-protocol"
+description = "DropBridge Protocol v1: messages, framing, manifests, limits, path safety"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+postcard = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+data-encoding = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

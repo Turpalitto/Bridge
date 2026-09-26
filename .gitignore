@@ -1,0 +1,16 @@
+/target
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.ci-logs/
+.dart_tool/
+app/flutter/build/
+app/flutter/.dart_tool/
+app/flutter/ephemeral/
+*.log
+*.so
+*.dylib
+*.dll
+*.exe
+**/jniLibs/

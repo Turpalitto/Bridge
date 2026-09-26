@@ -1,0 +1,26 @@
+[package]
+name = "dropbridge-rendezvous"
+description = "Minimal control plane: signed presence, endpoint hints, push hints"
+workspace = "../.."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dropbridge-rendezvous"
+path = "src/main.rs"
+
+[dependencies]
+dropbridge-protocol = { path = "../../rust/crates/dropbridge-protocol" }
+axum = "0.8"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+data-encoding = { workspace = true }
+chrono = { workspace = true }
+iroh-base = { version = "=1.2.0" }

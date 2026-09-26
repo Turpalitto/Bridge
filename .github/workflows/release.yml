@@ -1,0 +1,141 @@
+name: DropBridge Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows 11 Binaries & Installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build dropbridge-cli and dropbridge-tray (Release)
+        run: |
+          cargo build --release -p dropbridge-cli -p dropbridge-tray
+
+      - name: Verify Windows dist inputs exist
+        shell: pwsh
+        run: |
+          $missing = @('target/release/dropbridge.exe','target/release/dropbridge-tray.exe','dist/windows/install.ps1','dist/windows/uninstall.ps1','dist/windows/README.txt','dist/windows/AppxManifest.xml') | Where-Object { -not (Test-Path $_) }
+          if ($missing) { Write-Error "Missing files: $($missing -join ', ')"; exit 1 }
+
+      - name: Package Windows 11 Distribution
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist_pkg -Force
+          Copy-Item target/release/dropbridge.exe dist_pkg/
+          Copy-Item target/release/dropbridge-tray.exe dist_pkg/
+          Copy-Item dist/windows/install.ps1 dist_pkg/
+          Copy-Item dist/windows/uninstall.ps1 dist_pkg/
+          Copy-Item dist/windows/README.txt dist_pkg/
+          Copy-Item dist/windows/AppxManifest.xml dist_pkg/
+          Compress-Archive -Path dist_pkg/* -DestinationPath DropBridge-Windows-x64.zip
+          $hash = (Get-FileHash -Algorithm SHA256 DropBridge-Windows-x64.zip).Hash.ToLower()
+          "$hash  DropBridge-Windows-x64.zip" | Out-File -Encoding ascii DropBridge-Windows-x64.zip.sha256
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DropBridge-Windows-x64
+          path: |
+            DropBridge-Windows-x64.zip
+            DropBridge-Windows-x64.zip.sha256
+
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Setup Rust & Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build Android native FFI libraries
+        run: |
+          cargo ndk -t arm64-v8a -t x86_64 -o app/flutter/android/app/src/main/jniLibs build --release -p dropbridge-ffi
+
+      - name: Build Flutter Android APK
+        run: |
+          cd app/flutter
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk ../../app-release.apk
+          cd ../..
+          sha256sum app-release.apk > app-release.apk.sha256
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DropBridge-Android-APK
+          path: |
+            app-release.apk
+            app-release.apk.sha256
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DropBridge-Windows-x64
+          path: release_assets/
+
+      - name: Download Android Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DropBridge-Android-APK
+          path: release_assets/
+
+      - name: Generate Unified SHA256SUMS
+        run: |
+          cd release_assets
+          sha256sum DropBridge-Windows-x64.zip app-release.apk > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_assets/DropBridge-Windows-x64.zip
+            release_assets/app-release.apk
+            release_assets/SHA256SUMS.txt
+          name: DropBridge ${{ github.ref_name }}
+          body: |
+            ## Релиз DropBridge ${{ github.ref_name }}
+
+            ### Компоненты для загрузки:
+            * **Windows 11**: `DropBridge-Windows-x64.zip` — распакуйте и запустите `install.ps1` для добавления в меню Проводника и автозапуск в трее.
+            * **Android**: `app-release.apk` — готовое приложение для смартфона с поддержкой Wi-Fi Direct, системной шторки и аппаратного хранилища ключей.
+            * **Контрольные суммы**: `SHA256SUMS.txt` для проверки целостности бинарных файлов.

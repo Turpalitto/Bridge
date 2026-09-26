@@ -1,0 +1,27 @@
+[package]
+name = "dropbridge-transfer"
+description = "Transfer engine: streaming chunked moves, BLAKE3, journal, resume"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dropbridge-protocol = { path = "../dropbridge-protocol" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+data-encoding = { workspace = true }
+blake3 = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+zstd = { workspace = true }
+libc = "0.2"
+nix = { version = "0", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }

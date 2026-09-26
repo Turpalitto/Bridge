@@ -1,0 +1,29 @@
+[package]
+name = "dropbridge-core"
+description = "DropBridge node orchestration: pairing, trust, transfers, events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dropbridge-protocol = { path = "../dropbridge-protocol" }
+dropbridge-identity = { path = "../dropbridge-identity" }
+dropbridge-discovery = { path = "../dropbridge-discovery" }
+dropbridge-transfer = { path = "../dropbridge-transfer" }
+dropbridge-network = { path = "../dropbridge-network" }
+iroh = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+postcard = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+dropbridge-network = { path = "../dropbridge-network" }

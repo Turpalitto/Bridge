@@ -1,0 +1,139 @@
+name: DropBridge CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dropbridge-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows-check:
+    name: Windows tray crate cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (tray, windows-msvc)
+        run: |
+          mkdir -p .ci-logs
+          set -o pipefail
+          cargo check -p dropbridge-tray --target x86_64-pc-windows-msvc 2>&1 | tee .ci-logs/windows-check.log
+      - name: surface logs as annotations
+        if: failure()
+        run: |
+          grep -a -m6 -B2 -A16 "^error" .ci-logs/windows-check.log | head -140 | while IFS= read -r line; do
+            echo "::error title=windows-check-error::${line}"
+          done
+          tail -n 40 .ci-logs/windows-check.log | while IFS= read -r line; do
+            echo "::error title=windows-check-tail::${line}"
+          done
+      - name: pack logs
+        if: always()
+        run: tar czf ci-logs-win.tgz .ci-logs/windows-check.log
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-win-logs
+          path: ci-logs-win.tgz
+          retention-days: 2
+
+  rust:
+    name: Rust fmt/clippy/test
+    runs-on: ubuntu-latest
+    needs: windows-check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: pull windows-check log
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-win-logs
+          path: .
+        continue-on-error: true
+      - name: merge windows-check log
+        if: always()
+        run: |
+          if [ -f ci-logs-win.tgz ]; then tar xzf ci-logs-win.tgz && rm ci-logs-win.tgz; fi
+      - name: cargo fmt check
+        run: |
+          mkdir -p .ci-logs
+          set -o pipefail
+          cargo fmt --all -- --check 2>&1 | tee .ci-logs/fmt.log
+      - name: cargo clippy
+        if: always()
+        run: |
+          mkdir -p .ci-logs
+          set -o pipefail
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee .ci-logs/clippy.log
+      - name: cargo test
+        if: always()
+        run: |
+          mkdir -p .ci-logs
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee .ci-logs/test.log
+      - name: surface logs on failure
+        if: failure()
+        run: |
+          for f in .ci-logs/*.log; do
+            n=$(basename "$f")
+            tail -n 50 "$f" | while IFS= read -r line; do
+              echo "::error title=$n::${line}"
+            done
+          done
+      - name: upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-logs
+          path: .ci-logs/
+          retention-days: 7
+
+  bench-quick:
+    name: Loopback benchmark (quick)
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build bench
+        run: cargo build -p dropbridge-bench --profile bench-ci 2>&1 | tail -5
+      - name: run quick bench
+        run: |
+          ./target/bench-ci/dropbridge-bench --quick 2>&1 | tee /tmp/bench.txt
+          {
+            echo '### DropBridge quick bench (GitHub runner, loopback)'
+            echo '```'
+            cat /tmp/bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: pack bench output
+        if: always()
+        run: cp /tmp/bench.txt bench-quick-output.txt || true
+      - name: upload bench output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-quick-output
+          path: bench-quick-output.txt
+          retention-days: 30

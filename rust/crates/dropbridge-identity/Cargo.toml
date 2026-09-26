@@ -1,0 +1,23 @@
+[package]
+name = "dropbridge-identity"
+description = "Cryptographic device identity, key storage wrappers, trust registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+iroh-base = { version = "=1.2.0", features = ["key"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dropbridge-protocol = { path = "../dropbridge-protocol" }
+thiserror = { workspace = true }
+rand = { workspace = true }
+blake3 = { workspace = true }
+data-encoding = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
