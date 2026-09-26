@@ -169,6 +169,7 @@ async fn main() -> Result<()> {
             let hints = dropbridge_network::AddrHints::from_endpoint(node.endpoint());
             println!("relays    : {:?}", hints.relay_urls);
             println!("direct    : {:?}", hints.direct);
+            node.close().await;
         }
         Cmd::Pair { auto_confirm } => {
             let mut cfg = make_config(&cli);
@@ -189,26 +190,32 @@ async fn main() -> Result<()> {
             // Watch events for pairing completion.
             let mut events = node.events();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(130);
-            loop {
-                let timeout = tokio::time::sleep_until(deadline);
-                tokio::pin!(timeout);
-                tokio::select! {
-                    _ = &mut timeout => { bail!("pairing window expired"); }
-                    ev = events.recv() => {
-                        match ev {
-                            Ok(NodeEvent::PairingChallenge { device_name, auth_code, .. }) => {
-                                println!("→ {device_name} wants to pair. Confirm code: {auth_code:06}");
+            let pair_res = async {
+                loop {
+                    let timeout = tokio::time::sleep_until(deadline);
+                    tokio::pin!(timeout);
+                    tokio::select! {
+                        _ = &mut timeout => { bail!("pairing window expired"); }
+                        ev = events.recv() => {
+                            match ev {
+                                Ok(NodeEvent::PairingChallenge { device_name, auth_code, .. }) => {
+                                    println!("→ {device_name} wants to pair. Confirm code: {auth_code:06}");
+                                }
+                                Ok(NodeEvent::TrustChanged { trusted: true, name, .. }) => {
+                                    println!("✓ Paired with {name}");
+                                    return Ok(());
+                                }
+                                Ok(_) => {}
+                                Err(_) => break,
                             }
-                            Ok(NodeEvent::TrustChanged { trusted: true, name, .. }) => {
-                                println!("✓ Paired with {name}");
-                                return Ok(());
-                            }
-                            Ok(_) => {}
-                            Err(_) => break,
                         }
                     }
                 }
+                bail!("event loop ended without pairing")
             }
+            .await;
+            node.close().await;
+            pair_res?;
         }
         Cmd::Join { qr } => {
             let cfg = make_config(&cli);
@@ -222,7 +229,9 @@ async fn main() -> Result<()> {
             };
             let inv = pairing::parse_qr(qr.trim())?;
             println!("Pairing with {}…", inv.device_name);
-            node.join_pairing(inv).await?;
+            let join_res = node.join_pairing(inv).await;
+            node.close().await;
+            join_res?;
             println!("✓ Paired. This device is now trusted.");
         }
         Cmd::Devices => {
@@ -237,6 +246,7 @@ async fn main() -> Result<()> {
                 let z = dropbridge_network::hints::id_z32(&id);
                 println!("{:<24} {}  perms={:#08x}", d.name, z, d.permissions);
             }
+            node.close().await;
         }
         Cmd::Discover { secs } => {
             let cfg = make_config(&cli);
@@ -255,7 +265,9 @@ async fn main() -> Result<()> {
                     p.addr
                 );
             }
+            node.close().await;
         }
+
         Cmd::Daemon => {
             let cfg = make_config(&cli);
             let node = Node::start(cfg).await?;
@@ -433,6 +445,7 @@ async fn main() -> Result<()> {
                 }
             };
             printer.abort();
+            node2.close().await;
             match result {
                 Ok(r) if r.ok => println!("✓ delivered ({} bytes)", r.bytes),
                 Ok(r) => bail!("peer reported failure: {}", r.detail),

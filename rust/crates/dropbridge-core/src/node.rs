@@ -286,6 +286,11 @@ impl Node {
         });
         Ok(())
     }
+
+    /// Gracefully close the underlying network endpoint.
+    pub async fn close(&self) {
+        self.endpoint.close().await;
+    }
 }
 
 #[derive(Clone)]
