@@ -10,7 +10,7 @@
 pub mod protector;
 pub mod trust;
 
-pub use protector::{DirectSeedProtector, FileProtector, SecretProtector};
+pub use protector::{ChainedProtector, DirectSeedProtector, FileProtector, SecretProtector};
 pub use trust::{Permission, TrustRegistry, TrustedDevice};
 
 use iroh_base::{PublicKey, SecretKey, Signature};

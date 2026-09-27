@@ -1,0 +1,6 @@
+# Copy to `android/key.properties` (never commit the real file) and place
+# the keystore at the path below. CI sets the same values as env vars.
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=dropbridge
+storeFile=../dropbridge-release.jks

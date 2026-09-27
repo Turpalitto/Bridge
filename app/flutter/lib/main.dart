@@ -12,13 +12,29 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'ffi_bridge.dart';
 
 const _shareChannel = MethodChannel('dropbridge/share');
 
+/// Request the runtime permissions DropBridge needs (Android 13+).
+/// NEARBY_WIFI_DEVICES → LAN discovery/QUIC; POST_NOTIFICATIONS →
+/// foreground transfer progress. Best-effort: never blocks startup.
+Future<void> _requestRuntimePermissions() async {
+  try {
+    await [
+      Permission.nearbyWifiDevices,
+      Permission.notification,
+    ].request();
+  } catch (_) {
+    // permission_handler is a no-op on non-Android hosts (desktop tests).
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await _requestRuntimePermissions();
   final appDir = await getApplicationSupportDirectory();
   final core = DropBridgeCore.load();
 
@@ -91,6 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _transferredBytes = 0;
   DateTime? _lastProgressUpdate;
   int _lastBytesSnapshot = 0;
+  bool _receiveEnabled = true;
 
   @override
   void initState() {
@@ -112,6 +129,19 @@ class _HomeScreenState extends State<HomeScreen> {
           _note('Передача отменена из уведомления');
           setState(() {
             _isTransferring = false;
+          });
+          break;
+        case 'receiveMode':
+          final args = Map<String, dynamic>.from(call.arguments as Map);
+          final enabled = args['enabled'] == true;
+          _note(enabled ? 'Плитка: приём включён' : 'Плитка: приём отключён');
+          // Reflect the mode in the status line; the engine keeps running so
+          // outgoing sends still work while auto-accept is suspended.
+          setState(() {
+            _receiveEnabled = enabled;
+            if (!enabled && !_isTransferring) {
+              _status = 'Приём отключён (плитка в шторке)';
+            }
           });
           break;
       }
@@ -221,7 +251,9 @@ class _HomeScreenState extends State<HomeScreen> {
       final d = await widget.core.devices();
       setState(() {
         _devices = d;
-        _status = d.isEmpty ? 'Нет сопряжённых устройств' : 'Сопряжённых устройств: ${d.length}';
+        _status = !_receiveEnabled
+            ? 'Приём отключён (плитка в шторке)'
+            : (d.isEmpty ? 'Нет сопряжённых устройств' : 'Сопряжённых устройств: ${d.length}');
       });
     } catch (e) {
       setState(() => _status = 'Ошибка: $e');

@@ -20,31 +20,70 @@ env:
 
 jobs:
   windows-check:
-    name: Windows tray crate cross-check
-    runs-on: ubuntu-latest
+    name: Windows build (whole workspace)
+    # Native Windows runner, not a Linux cross-check: the workspace links
+    # bundled SQLite, whose C build needs the real MSVC toolchain and import
+    # libraries. Cross-checking from Linux only ever covered the tray.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
-      - name: cargo check (tray, windows-msvc)
+      # The whole workspace is checked, not just the tray: the engine CLI is the
+      # binary users actually launch, and its Windows-only code paths (DPAPI
+      # protector, GetDiskFreeSpaceExW probe, SetConsoleCtrlHandler shutdown,
+      # context-menu registration) are compiled ONLY under --target windows.
+      # A tray-only check silently let Windows breakage ship.
+      - name: cargo check (workspace, windows-msvc)
+        shell: bash
         run: |
           mkdir -p .ci-logs
           set -o pipefail
-          cargo check -p dropbridge-tray --target x86_64-pc-windows-msvc 2>&1 | tee .ci-logs/windows-check.log
+          cargo check --workspace --all-targets --target x86_64-pc-windows-msvc 2>&1 | tee .ci-logs/windows-check.log
+      - name: cargo clippy (workspace, windows-msvc)
+        shell: bash
+        run: |
+          mkdir -p .ci-logs
+          set -o pipefail
+          cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings 2>&1 | tee .ci-logs/windows-clippy.log
+      # Guards the exact failure the users reported: binaries that compile but
+      # do not start. The tray links against user32/comctl32 and the engine
+      # against crypt32/bcrypt, so a link or subsystem regression is caught here.
+      - name: build and smoke-test the Windows binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .ci-logs | Out-Null
+          cargo build -p dropbridge-cli -p dropbridge-tray --target x86_64-pc-windows-msvc
+          $bin = "target/x86_64-pc-windows-msvc/debug"
+          & "$bin/dropbridge.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "dropbridge.exe --version failed with $LASTEXITCODE" }
+          if (-not (Test-Path "$bin/dropbridge-tray.exe")) { throw "dropbridge-tray.exe was not produced" }
+          # The tray must be a GUI app: a console subsystem binary flashes a
+          # black window on every autostart and looks broken.
+          $bytes = [System.IO.File]::ReadAllBytes("$bin/dropbridge-tray.exe")
+          $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [System.BitConverter]::ToUInt16($bytes, $pe + 0x5C)
+          if ($subsystem -ne 2) { throw "dropbridge-tray.exe PE subsystem is $subsystem, expected 2 (WINDOWS_GUI)" }
+          Write-Host "tray PE subsystem = $subsystem (GUI) — ok"
       - name: surface logs as annotations
         if: failure()
+        shell: bash
         run: |
-          grep -a -m6 -B2 -A16 "^error" .ci-logs/windows-check.log | head -140 | while IFS= read -r line; do
-            echo "::error title=windows-check-error::${line}"
-          done
-          tail -n 40 .ci-logs/windows-check.log | while IFS= read -r line; do
-            echo "::error title=windows-check-tail::${line}"
+          for f in .ci-logs/windows-*.log; do
+            n=$(basename "$f")
+            grep -a -m6 -B2 -A16 "^error" "$f" | head -140 | while IFS= read -r line; do
+              echo "::error title=${n}::${line}"
+            done
+            tail -n 40 "$f" | while IFS= read -r line; do
+              echo "::error title=${n}::${line}"
+            done
           done
       - name: pack logs
         if: always()
-        run: tar czf ci-logs-win.tgz .ci-logs/windows-check.log
+        shell: bash
+        run: tar czf ci-logs-win.tgz .ci-logs/windows-check.log .ci-logs/windows-clippy.log
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v4

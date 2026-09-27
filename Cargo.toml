@@ -14,8 +14,13 @@ members = [
   "rust/crates/dropbridge-tray",
   "server/rendezvous",
 ]
-# dropbridge-tray only compiles on Windows targets; keep local/CI-on-Linux
-# default builds green by excluding it from the default member set.
+# dropbridge-tray is a member of the default set on purpose: its Windows code
+# lives behind #[cfg(windows)], and the crate still builds everywhere through a
+# one-line `main()` that explains what to run instead. Keeping it here means a
+# plain `cargo build` / `cargo test` / `cargo clippy` at the repo root at least
+# compiles and lints the tray sources; the real Windows build is covered by the
+# `windows-check` job in .github/workflows/ci.yml, which cross-compiles the
+# whole workspace for x86_64-pc-windows-msvc and smoke-tests the binaries.
 default-members = [
   "rust/crates/dropbridge-protocol",
   "rust/crates/dropbridge-identity",
@@ -27,6 +32,7 @@ default-members = [
   "rust/crates/dropbridge-bench",
   "rust/crates/dropbridge-cli",
   "rust/crates/dropbridge-ffi",
+  "rust/crates/dropbridge-tray",
   "server/rendezvous",
 ]
 

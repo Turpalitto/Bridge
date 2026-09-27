@@ -5,14 +5,21 @@
 //!
 //! * **Android** — Android Keystore AES-256-GCM wrapping (implemented in the
 //!   Kotlin layer of the Flutter app; see docs/ANDROID.md),
-//! * **Windows** — DPAPI `CryptProtectData` (current user scope; implemented
-//!   in `dropbridge-tray`, see docs/WINDOWS.md).
+//! * **Windows** — DPAPI `CryptProtectData` in *this* crate (current user +
+//!   machine scope); the engine binary (`dropbridge.exe`) uses it via
+//!   [`platform_protector`], and the tray only supervises that engine — it
+//!   never touches keys. See docs/WINDOWS.md.
 //!
 //! The CLI/development fallback is [`FileProtector`]: the key blob is written
 //! to a chmod-0600 file inside the app's private config dir. It is explicitly
-//! **not** encryption — it exists so headless servers/CI can run, and it is
-//! refused by default when a platform protector is available (the app wiring
-//! decides).
+//! **not** encryption — it exists so headless servers/CI can run.
+//!
+//! On Windows it is *never* used to write: [`platform_protector`] returns a
+//! [`ChainedProtector`] whose primary is DPAPI, so a fresh install can only
+//! ever produce a DPAPI-sealed marker. The file protector is reachable there
+//! exclusively as a read fallback, which is what keeps a state directory that
+//! was created by another platform (or by an older build) bootable instead of
+//! making the engine die with an opaque DPAPI error.
 use std::path::{Path, PathBuf};
 
 use crate::IdentityError;
@@ -116,6 +123,54 @@ impl SecretProtector for FileProtector {
     }
 }
 
+/// A protector that prefers `primary` but can still *read* a blob produced by
+/// `fallback`.
+///
+/// Sealing always goes to `primary`, so a fallback protector can never widen
+/// the on-disk exposure of a freshly created identity. Unsealing tries
+/// `primary` first and only reaches for `fallback` when the primary refuses
+/// the blob — which on Windows is the "DPAPI blob created by a different user,
+/// machine or elevation level" case. This turns an unbootable engine into a
+/// bootable one without ever silently downgrading a new install.
+pub struct ChainedProtector {
+    primary: Box<dyn SecretProtector>,
+    fallback: Box<dyn SecretProtector>,
+}
+
+impl ChainedProtector {
+    /// Chain two protectors; `fallback` is read-only in practice.
+    pub fn new(primary: Box<dyn SecretProtector>, fallback: Box<dyn SecretProtector>) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+impl SecretProtector for ChainedProtector {
+    fn name(&self) -> &'static str {
+        self.primary.name()
+    }
+
+    fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        self.primary.seal(plaintext)
+    }
+
+    fn unseal(&self, sealed: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        match self.primary.unseal(sealed) {
+            Ok(plaintext) => Ok(plaintext),
+            Err(primary_err) => match self.fallback.unseal(sealed) {
+                Ok(plaintext) => Ok(plaintext),
+                Err(_) => Err(IdentityError::Protector(format!(
+                    "the identity could not be unwrapped by {} ({primary_err}) and the fallback \
+                     ({}) has no matching blob either. The state directory most likely belongs to \
+                     another Windows user or another machine (DPAPI blobs are bound to both). Delete \
+                     the state directory to start over, then pair again.",
+                    self.primary.name(),
+                    self.fallback.name()
+                ))),
+            },
+        }
+    }
+}
+
 /// Load-or-create an identity using a protector.
 ///
 /// `marker` is the small persisted blob returned by [`SecretProtector::seal`]
@@ -162,7 +217,7 @@ impl SecretProtector for DpapiProtector {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, IdentityError> {
-    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
@@ -198,7 +253,15 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, IdentityError> {
         }
     };
     if ok == 0 {
-        return Err(IdentityError::Protector("DPAPI call failed".into()));
+        // The code is the only actionable part of a DPAPI failure, so surface
+        // it: 0x80090005 (-2146893005) is the classic "this blob was sealed by
+        // a different user or machine".
+        let code = unsafe { GetLastError() };
+        return Err(IdentityError::Protector(format!(
+            "Crypt{}Data failed (0x{:08X})",
+            if protect { "Protect" } else { "Unprotect" },
+            code
+        )));
     }
     let out =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) }.to_vec();
@@ -207,11 +270,18 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>, IdentityError> {
 }
 
 /// Pick the best protector available on this platform (spec §11).
+///
+/// On Windows the file protector is kept as a *read-only* fallback so a state
+/// directory written by another platform still boots; new identities are only
+/// ever sealed with DPAPI.
+#[must_use]
 pub fn platform_protector(fallback_path: std::path::PathBuf) -> Box<dyn SecretProtector> {
     #[cfg(windows)]
     {
-        let _ = fallback_path;
-        Box::new(DpapiProtector)
+        Box::new(ChainedProtector::new(
+            Box::new(DpapiProtector),
+            Box::new(FileProtector::new(fallback_path)),
+        ))
     }
     #[cfg(not(windows))]
     {
@@ -229,6 +299,90 @@ mod tests {
         let p = FileProtector::new(dir.path().join("keys/device.key"));
         let (id, marker) = load_or_create(&p, None).unwrap();
         let (id2, _) = load_or_create(&p, Some(&marker)).unwrap();
+        assert_eq!(id.device_id(), id2.device_id());
+    }
+
+    /// A primary that refuses everything, standing in for DPAPI on a machine
+    /// that cannot unwrap a blob sealed elsewhere.
+    struct Refusing(&'static str);
+
+    impl SecretProtector for Refusing {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn seal(&self, _p: &[u8]) -> Result<Vec<u8>, IdentityError> {
+            Err(IdentityError::Protector("refusing to seal".into()))
+        }
+        fn unseal(&self, _s: &[u8]) -> Result<Vec<u8>, IdentityError> {
+            Err(IdentityError::Protector("refusing to unseal".into()))
+        }
+    }
+
+    #[test]
+    fn chain_reads_a_blob_only_the_fallback_understands() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("keys/device.key");
+
+        // Written by the file protector, i.e. a state directory that predates
+        // the platform protector being wired in.
+        let (id, marker) = load_or_create(&FileProtector::new(key.clone()), None).unwrap();
+        assert!(!marker.is_empty());
+
+        let chain = ChainedProtector::new(
+            Box::new(Refusing("primary")),
+            Box::new(FileProtector::new(key)),
+        );
+        let (id2, marker2) = load_or_create(&chain, Some(&marker)).unwrap();
+        assert_eq!(id.device_id(), id2.device_id());
+        assert_eq!(marker, marker2, "an existing marker must not be rewritten");
+    }
+
+    #[test]
+    fn chain_prefers_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("keys/device.key");
+        let (id, marker) = load_or_create(&FileProtector::new(key), None).unwrap();
+
+        let chain = ChainedProtector::new(
+            Box::new(DirectSeedProtector::new(id.to_bytes())),
+            Box::new(Refusing("fallback")),
+        );
+        let (id2, _) = load_or_create(&chain, Some(&marker)).unwrap();
+        assert_eq!(id.device_id(), id2.device_id());
+    }
+
+    #[test]
+    fn chain_never_seals_with_the_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let fallback_key = dir.path().join("keys/device.key");
+        let chain = ChainedProtector::new(
+            Box::new(DirectSeedProtector::new([7u8; 32])),
+            Box::new(FileProtector::new(fallback_key.clone())),
+        );
+        let (_id, marker) = load_or_create(&chain, None).unwrap();
+        assert_eq!(marker, b"hardware-keystore-backed".to_vec());
+        assert!(!fallback_key.exists(), "the fallback must stay read-only");
+    }
+
+    #[test]
+    fn chain_explains_an_unrecoverable_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let chain = ChainedProtector::new(
+            Box::new(Refusing("windows-dpapi")),
+            Box::new(FileProtector::new(dir.path().join("keys/device.key"))),
+        );
+        let err = load_or_create(&chain, Some(b"sealed-by-someone-else")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("windows-dpapi"), "{msg}");
+        assert!(msg.contains("state directory"), "{msg}");
+    }
+
+    #[test]
+    fn platform_protector_roundtrips_on_this_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = platform_protector(dir.path().join("keys/device.key"));
+        let (id, marker) = load_or_create(p.as_ref(), None).unwrap();
+        let (id2, _) = load_or_create(p.as_ref(), Some(&marker)).unwrap();
         assert_eq!(id.device_id(), id2.device_id());
     }
 }

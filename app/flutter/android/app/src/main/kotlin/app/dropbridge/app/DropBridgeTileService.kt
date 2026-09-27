@@ -10,8 +10,10 @@ import androidx.annotation.RequiresApi
 /**
  * 2026 Android Quick Settings Tile for DropBridge.
  *
- * Allows smartphone users to toggle DropBridge discoverability / receive mode
- * directly from the system notification shade with a single tap.
+ * Toggles the receive/discoverability mode. The flag is observed by
+ * MainActivity (on resume) and the Flutter layer (auto_receive config):
+ * when OFF, the engine is re-initialized with auto_receive=false, so
+ * incoming offers are queued but not auto-accepted.
  */
 @RequiresApi(Build.VERSION_CODES.N)
 class DropBridgeTileService : TileService() {
@@ -28,11 +30,15 @@ class DropBridgeTileService : TileService() {
         saveDropBridgeState(newState)
         updateTileState(isActive = newState)
 
+        // Bring the app forward so it notices the new mode and can
+        // reconfigure the engine.
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_TILE_TOGGLED, newState)
+        }
         if (newState) {
-            // Launch MainActivity to start receiver if not already active
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
+            startActivityAndCollapse(intent)
+        } else {
             startActivityAndCollapse(intent)
         }
     }
@@ -59,7 +65,14 @@ class DropBridgeTileService : TileService() {
     }
 
     companion object {
-        private const val PREFS_NAME = "dropbridge_prefs"
-        private const val KEY_ACTIVE = "quick_tile_active"
+        const val PREFS_NAME = "dropbridge_prefs"
+        const val KEY_ACTIVE = "quick_tile_active"
+
+        /** Read the receive-mode flag; defaults to ON. */
+        @JvmStatic
+        fun isReceiveEnabled(context: android.content.Context): Boolean {
+            val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            return prefs.getBoolean(KEY_ACTIVE, true)
+        }
     }
 }

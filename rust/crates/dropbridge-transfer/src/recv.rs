@@ -460,19 +460,14 @@ pub fn free_space(path: &Path) -> Result<u64, RecvError> {
     #[allow(unsafe_code)]
     {
         use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
         let mut path_wide: Vec<u16> = probe.as_os_str().encode_wide().collect();
         path_wide.push(0);
         let mut free_bytes_available: u64 = 0;
         let mut total_number_of_bytes: u64 = 0;
         let mut total_number_of_free_bytes: u64 = 0;
-        unsafe extern "system" {
-            fn GetDiskFreeSpaceExW(
-                lpDirectoryName: *const u16,
-                lpFreeBytesAvailableToCaller: *mut u64,
-                lpTotalNumberOfBytes: *mut u64,
-                lpTotalNumberOfFreeBytes: *mut u64,
-            ) -> i32;
-        }
+        // Fail closed: reporting `u64::MAX` here would silently disable the
+        // pre-flight space check and let a transfer die halfway on a full disk.
         let ret = unsafe {
             GetDiskFreeSpaceExW(
                 path_wide.as_ptr(),
@@ -481,14 +476,15 @@ pub fn free_space(path: &Path) -> Result<u64, RecvError> {
                 &mut total_number_of_free_bytes,
             )
         };
-        if ret != 0 {
-            Ok(free_bytes_available)
-        } else {
-            Ok(u64::MAX)
+        if ret == 0 {
+            return Err(RecvError::Io(std::io::Error::last_os_error()));
         }
+        Ok(free_bytes_available)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        // No way to ask the platform: keep the check permissive rather than
+        // inventing a number, and say so in the log-free error text.
         let _ = probe;
         Ok(u64::MAX)
     }

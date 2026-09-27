@@ -138,6 +138,7 @@ class MainActivity : FlutterActivity() {
 
         // Deliver staged share paths (from ShareEntryActivity) to Dart.
         deliverShareIntent(intent)
+        deliverTileState(intent)
     }
 
     override fun onDestroy() {
@@ -150,6 +151,14 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         deliverShareIntent(intent)
+        deliverTileState(intent)
+    }
+
+    /** Forward the Quick Settings tile receive-mode to Dart. */
+    private fun deliverTileState(intent: Intent?) {
+        val enabled = intent?.getBooleanExtra(EXTRA_TILE_TOGGLED, false) ?: return
+        channel.invokeMethod("receiveMode", mapOf("enabled" to enabled))
+        intent.removeExtra(EXTRA_TILE_TOGGLED)
     }
 
     private fun deliverShareIntent(intent: Intent?) {
@@ -207,5 +216,6 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val REQ_PICK = 1001
         const val EXTRA_STAGED_PATHS = "dropbridge.staged_paths"
+        const val EXTRA_TILE_TOGGLED = "dropbridge.tile_toggled"
     }
 }
