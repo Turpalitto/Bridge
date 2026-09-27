@@ -102,7 +102,7 @@ impl ChunkSource for RecvChunkStream {
         if hlen == 0 || hlen > MAX_HEADER_LEN {
             return Err(TransportError::Read(format!("bad header len {hlen}")));
         }
-        if self.fill(4 + hlen).await?.is_none() {
+        if self.fill(hlen).await?.is_none() {
             return Err(TransportError::Closed);
         }
         let header_bytes = self.buf.split_to(hlen);
@@ -117,5 +117,86 @@ impl ChunkSource for RecvChunkStream {
         }
         let data: Bytes = self.buf.split_to(dlen).freeze();
         Ok(Some(ChunkPayload { header, data }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::endpoint::{build_endpoint, RelayConfig};
+    use bytes::Bytes;
+    use dropbridge_identity::DeviceIdentity;
+    use dropbridge_protocol::ALPN_TRANSFER;
+    use dropbridge_transfer::{ChunkHeader, ChunkPayload, ChunkSink, ChunkSource};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_chunk_stream_roundtrip_and_exact_framing() {
+        let id_a = DeviceIdentity::generate();
+        let id_b = DeviceIdentity::generate();
+        let ep_a = build_endpoint(
+            &id_a,
+            &RelayConfig::Disabled,
+            vec![ALPN_TRANSFER.to_vec()],
+            Some(47001),
+        )
+        .await
+        .unwrap();
+        let ep_b = build_endpoint(
+            &id_b,
+            &RelayConfig::Disabled,
+            vec![ALPN_TRANSFER.to_vec()],
+            Some(47002),
+        )
+        .await
+        .unwrap();
+
+        let hints_b = crate::hints::AddrHints::from_endpoint(&ep_b);
+        let addr_b = hints_b.to_endpoint_addr(&id_b.device_id()).unwrap();
+
+        let (conn_a_res, conn_b_res) = tokio::join!(ep_a.connect(addr_b, ALPN_TRANSFER), async {
+            let incoming = ep_b.accept().await.unwrap();
+            incoming.await.unwrap()
+        });
+        let conn_a = conn_a_res.unwrap();
+        let conn_b = conn_b_res;
+
+        let (send_a, _recv_a) = conn_a.open_bi().await.unwrap();
+
+        let send_handle = tokio::spawn(async move {
+            let mut sink = SendChunkStream::new(send_a);
+            // Send a 0-length payload chunk
+            sink.send_chunk(ChunkPayload {
+                header: ChunkHeader::raw(1, 0, 0, 0, 0),
+                data: Bytes::new(),
+            })
+            .await
+            .unwrap();
+
+            // Send a chunk with payload
+            sink.send_chunk(ChunkPayload {
+                header: ChunkHeader::raw(1, 0, 0, 0, 5),
+                data: Bytes::from_static(b"hello"),
+            })
+            .await
+            .unwrap();
+
+            sink.finish().await.unwrap();
+        });
+
+        let (_send_b, recv_b) = conn_b.accept_bi().await.unwrap();
+        let mut source = RecvChunkStream::new(recv_b);
+
+        let c1 = source.next_chunk().await.unwrap().expect("first chunk");
+        assert_eq!(c1.header.len, 0);
+        assert_eq!(c1.data.len(), 0);
+
+        let c2 = source.next_chunk().await.unwrap().expect("second chunk");
+        assert_eq!(c2.header.len, 5);
+        assert_eq!(&c2.data[..], b"hello");
+
+        let c3 = source.next_chunk().await.unwrap();
+        assert!(c3.is_none());
+
+        send_handle.await.unwrap();
     }
 }

@@ -111,7 +111,8 @@ impl ReceiverEngine {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| canonical_root.clone());
             std::fs::create_dir_all(&candidate_parent)?;
-            if !is_within_root(&canonical_root, &candidate_parent) {
+            let canonical_parent = candidate_parent.canonicalize()?;
+            if !is_within_root(&canonical_root, &canonical_parent) {
                 return Err(RecvError::UnsafePath(rel));
             }
             let part_path = part_path_for(&final_path);
@@ -346,25 +347,25 @@ impl ReceiverEngine {
         let mut out = Vec::new();
         for id in &self.order {
             let f = &self.files[id];
-            if f.entry.size == 0 {
-                // zero-byte file: ensure existence
-                if let Some(parent) = f.final_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(false)
-                    .open(&f.final_path)?;
-                out.push(f.final_path.clone());
-                continue;
-            }
             let target = match (f.final_path.exists(), policy) {
                 (false, _) => f.final_path.clone(),
                 (true, CollisionPolicy::Replace) => f.final_path.clone(),
                 (true, CollisionPolicy::Skip) => continue,
                 (true, CollisionPolicy::Rename) => find_unused_name(&f.final_path)?,
             };
+            if f.entry.size == 0 {
+                // zero-byte file: ensure existence with correct collision policy
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&target)?;
+                out.push(target);
+                continue;
+            }
             std::fs::rename(&f.part_path, &target)?;
             out.push(target);
         }
@@ -660,5 +661,71 @@ mod tests {
         drop(tx);
         let r = eng.ingest(&mut rx, &journal, "t4", None, None).await;
         assert!(matches!(r, Err(RecvError::OutOfBounds { .. })));
+    }
+
+    #[test]
+    fn zero_byte_collision_policies() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("recv");
+        let jdir = dir.path().join("j");
+        let journal = Journal::open_in(&jdir).unwrap();
+        let m = manifest_of(vec![("empty.txt", 0)]);
+
+        // 1. Rename: preserves existing file, creates empty (1).txt
+        {
+            let mut eng = ReceiverEngine::prepare(&root, &m, &journal, "t-zero-rename").unwrap();
+            let orig = root.join("empty.txt");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(&orig, b"original content").unwrap();
+
+            let out = eng.finalize(CollisionPolicy::Rename).unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].file_name().unwrap(), "empty (1).txt");
+            assert_eq!(std::fs::read(&orig).unwrap(), b"original content");
+            assert_eq!(std::fs::metadata(&out[0]).unwrap().len(), 0);
+        }
+
+        // 2. Skip: leaves existing file intact and skips adding to out
+        {
+            let mut eng = ReceiverEngine::prepare(&root, &m, &journal, "t-zero-skip").unwrap();
+            let orig = root.join("empty.txt");
+            std::fs::write(&orig, b"original content").unwrap();
+
+            let out = eng.finalize(CollisionPolicy::Skip).unwrap();
+            assert!(out.is_empty());
+            assert_eq!(std::fs::read(&orig).unwrap(), b"original content");
+        }
+
+        // 3. Replace: truncates existing file to 0 bytes
+        {
+            let mut eng = ReceiverEngine::prepare(&root, &m, &journal, "t-zero-replace").unwrap();
+            let orig = root.join("empty.txt");
+            std::fs::write(&orig, b"original content").unwrap();
+
+            let out = eng.finalize(CollisionPolicy::Replace).unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0], orig.canonicalize().unwrap());
+            assert_eq!(std::fs::metadata(&orig).unwrap().len(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("recv");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // Create symlink inside root pointing outside
+        let symlink_dir = root.join("link_to_outside");
+        std::os::unix::fs::symlink(&outside, &symlink_dir).unwrap();
+
+        let jdir = dir.path().join("j");
+        let journal = Journal::open_in(&jdir).unwrap();
+        let m = manifest_of(vec![("link_to_outside/secret.txt", 4)]);
+        let r = ReceiverEngine::prepare(&root, &m, &journal, "t-symlink");
+        assert!(matches!(r, Err(RecvError::UnsafePath(_))));
     }
 }

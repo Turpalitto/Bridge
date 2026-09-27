@@ -621,12 +621,17 @@ pub async fn handle_incoming_transfer(node: &Arc<Node>, conn: Connection) -> Res
         .await?;
         return Err(CoreError::Other("transfer incomplete".into()));
     }
-    let ok = guard.verify(&expected_hash).await.unwrap_or(false);
-    let files = if ok {
-        guard.finalize(CollisionPolicy::Rename).unwrap_or_default()
+    let (ok, files, detail) = if guard.verify(&expected_hash).await.unwrap_or(false) {
+        match guard.finalize(CollisionPolicy::Rename) {
+            Ok(files) => (true, files, "verified".to_string()),
+            Err(e) => {
+                guard.cleanup();
+                (false, Vec::new(), format!("finalize failed: {e}"))
+            }
+        }
     } else {
         guard.cleanup();
-        Vec::new()
+        (false, Vec::new(), "hash mismatch".to_string())
     };
     drop(guard);
 
@@ -643,20 +648,19 @@ pub async fn handle_incoming_transfer(node: &Arc<Node>, conn: Connection) -> Res
         session,
         ok,
         files: files.clone(),
-        detail: if ok {
-            "verified".into()
-        } else {
-            "hash mismatch".into()
-        },
+        detail: detail.clone(),
     });
     ctrl.send_msg(&Msg::Complete {
         session,
         ok,
-        detail: None,
+        detail: if ok { None } else { Some(detail.clone()) },
     })
     .await?;
-    info!(session, ok, files = files.len(), "transfer finished");
+    info!(session, ok, files = files.len(), detail = %detail, "transfer finished");
     conn.closed().await;
+    if !ok {
+        return Err(CoreError::Other(detail));
+    }
     Ok(())
 }
 

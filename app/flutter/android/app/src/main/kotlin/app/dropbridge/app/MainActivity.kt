@@ -186,14 +186,30 @@ class MainActivity : FlutterActivity() {
 
     /** Copy a content:// URI into the app staging dir; returns the file path. */
     private fun stageUri(uri: Uri): String? = runCatching {
-        val name = queryDisplayName(uri) ?: "shared-${System.nanoTime()}"
+        val rawName = queryDisplayName(uri) ?: "shared-${System.nanoTime()}"
+        val sanitized = File(rawName).name.filter { it.isLetterOrDigit() || it in "._- " }.trim().ifEmpty { "shared-${System.nanoTime()}" }
         val dir = File(filesDir, "staged").apply { mkdirs() }
-        val out = File(dir, uniqueName(dir, name))
+        pruneStagedFiles(dir)
+        val out = File(dir, uniqueName(dir, sanitized))
+        if (!out.canonicalPath.startsWith(dir.canonicalPath + File.separator)) {
+            return@runCatching null
+        }
         contentResolver.openInputStream(uri)?.use { input ->
             out.outputStream().use { input.copyTo(it) }
         } ?: return@runCatching null
         out.absolutePath
     }.getOrNull()
+
+    private fun pruneStagedFiles(dir: File) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+            dir.listFiles()?.forEach { file ->
+                if (file.isFile && file.lastModified() < cutoff) {
+                    file.delete()
+                }
+            }
+        }
+    }
 
     private fun queryDisplayName(uri: Uri): String? = runCatching {
         contentResolver.query(uri, null, null, null, null)?.use { c ->

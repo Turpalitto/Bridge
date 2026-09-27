@@ -54,12 +54,13 @@ async fn main() -> Result<()> {
     let mut relay = RelayConfig::new(cli.bind);
     relay.access = std::sync::Arc::new(AllowAll);
     if cli.rate_limit_mbps > 0 {
-        let bytes_per_second =
-            NonZeroU32::new(cli.rate_limit_mbps.saturating_mul(125_000)).unwrap();
-        // `Limits` is #[non_exhaustive] — build via Default + field assignment.
-        let mut limits = Limits::default();
-        limits.client_rx = Some(ClientRateLimit::new(bytes_per_second));
-        relay.limits = limits;
+        if let Some(bytes_per_second) = NonZeroU32::new(cli.rate_limit_mbps.saturating_mul(125_000))
+        {
+            // `Limits` is #[non_exhaustive] — build via Default + field assignment.
+            let mut limits = Limits::default();
+            limits.client_rx = Some(ClientRateLimit::new(bytes_per_second));
+            relay.limits = limits;
+        }
     }
 
     // `ServerConfig` is #[non_exhaustive] — same construction style.

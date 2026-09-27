@@ -20,7 +20,7 @@ const MAX_COMPONENT_LEN: usize = 255;
 
 fn is_windows_device_name(stem: &str) -> bool {
     let s = stem.to_ascii_uppercase();
-    let bare = ["CON", "PRN", "AUX", "NUL"];
+    let bare = ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"];
     if bare.contains(&s.as_str()) {
         return true;
     }
@@ -162,6 +162,10 @@ mod tests {
             "PRN.any",
             "aux",
             "aux.tar",
+            "CLOCK$",
+            "clock$.txt",
+            "CONIN$",
+            "conout$.dat",
             "a\u{0000}b",
             "file\0name.txt",
             "a\nb",
