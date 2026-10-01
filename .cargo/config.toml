@@ -1,0 +1,22 @@
+# Static CRT for all Windows MSVC targets.
+#
+# Shipped binaries (dropbridge.exe, dropbridge-tray.exe) must launch on any
+# Windows 10/11 machine WITHOUT the Visual C++ Redistributable installed.
+# Dynamically linked VCRUNTIME140.dll / UCRT is the classic
+# "app starts, then immediately dies with no window" failure (0xc0000135 /
+# "VCRUNTIME140.dll not found") on clean systems. Static CRT (+crt-static)
+# removes that dependency entirely; binaries grow ~1 MB, which is fine.
+#
+# CI note: the release workflow builds on windows-latest where this config
+# applies automatically. Cross-builds from macOS/Linux must use cargo-xwin
+# (it also respects these rustflags).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Keep debug output quiet and reproducible for tray/daemon shells built
+# from any host.
+[build]
+# incremental = true

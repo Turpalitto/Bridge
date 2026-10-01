@@ -968,6 +968,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1106,6 +1107,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1119,7 +1121,6 @@ dependencies = [
  "chrono",
  "data-encoding",
  "dropbridge-protocol",
- "libc",
  "nix",
  "proptest",
  "rand 0.10.3",
@@ -1130,6 +1131,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "windows-sys 0.60.2",
  "zstd",
 ]
 
@@ -4878,6 +4880,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

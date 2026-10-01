@@ -22,12 +22,14 @@ use dropbridge_core::session;
 use dropbridge_protocol::DeviceKind;
 
 mod shell;
+mod shutdown;
 
 #[derive(Parser)]
 #[command(
     name = "dropbridge",
     version,
-    about = "DropBridge — pair once, drop anywhere"
+    about = "DropBridge — pair once, drop anywhere",
+    long_about = None
 )]
 struct Cli {
     /// State directory (keys, trust, journal).
@@ -70,6 +72,7 @@ enum Cmd {
     Daemon,
     Send {
         peer: String,
+        #[arg(num_args = 0..)]
         paths: Vec<PathBuf>,
         /// Resume a previous session id instead of starting a new one.
         #[arg(long)]
@@ -181,6 +184,9 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
     let cli = Cli::parse();
+    // Installed before any long-running work so a console close (or the
+    // tray's GenerateConsoleCtrlEvent) is honoured even during startup.
+    shutdown::install();
 
     match &cli.cmd {
         Cmd::Info => {
@@ -324,8 +330,20 @@ async fn main() -> Result<()> {
             let mut events = node.events();
             let mut last_progress_print = std::time::Instant::now() - Duration::from_secs(2);
             let mut acc_bytes = 0u64;
+            // Graceful stop: SIGINT/SIGTERM on Unix; console control events on
+            // Windows (console close, or GenerateConsoleCtrlEvent from the
+            // tray). One future for the whole loop — the Windows implementation
+            // polls the flag that the OS-owned handler thread flips.
+            let mut shutdown = shutdown::wait();
             loop {
-                match events.recv().await {
+                let ev = tokio::select! {
+                    ev = events.recv() => ev,
+                    kind = &mut shutdown => {
+                        println!("\n{}", kind.message());
+                        break;
+                    }
+                };
+                match ev {
                     Ok(NodeEvent::DeviceDiscovered(p)) => {
                         println!("• discovered {} at {}", p.name, p.addr);
                     }
@@ -388,12 +406,32 @@ async fn main() -> Result<()> {
                     Err(_) => break,
                 }
             }
+            println!("Stopping daemon…");
+            node.close().await;
+            println!("✓ daemon stopped cleanly.");
         }
         Cmd::Send {
             peer,
             paths,
             session: resume_session,
         } => {
+            let paths = if paths.is_empty() {
+                #[cfg(windows)]
+                {
+                    pick_files_windows()?
+                }
+                #[cfg(not(windows))]
+                {
+                    bail!("no paths provided; usage: dropbridge send <peer> <path>...");
+                }
+            } else {
+                paths.clone()
+            };
+            if paths.is_empty() {
+                println!("No files selected.");
+                return Ok(());
+            }
+
             let cfg = make_config(&cli);
             let node = {
                 let mut c = cfg.clone();
@@ -430,9 +468,11 @@ async fn main() -> Result<()> {
             println!("Sending {} path(s) to {}…", paths.len(), target.name);
 
             // Make sure we have a route: try discovery first (LAN-first).
-            if node.hints_for(&peer_id).await.is_none() {
-                println!("No route known yet — discovering…");
-                let _ = node.discover(Duration::from_secs(4)).await;
+            if node.hints_for(&peer_id).await.is_none()
+                || cli.relay == "disabled"
+                || cli.relay == "lan"
+            {
+                let _ = node.discover(Duration::from_secs(2)).await;
             }
 
             let mut events = node.events();
@@ -578,10 +618,78 @@ fn human(n: u64) -> String {
     )
 }
 
+/// Render a pairing QR as pure ASCII.
+///
+/// The tray opens `dropbridge pair` in a brand-new console, which on a stock
+/// Russian Windows uses an OEM code page (866/1251) — the Unicode half-block
+/// renderer used to print mojibake there. Two `#` per dark module keeps the
+/// aspect ratio of a character cell, so the code still scans.
 fn print_qr(text: &str) -> Result<()> {
-    use qrcode::render::unicode;
-    let code = qrcode::QrCode::new(text.as_bytes()).context("qr encode")?;
-    let img = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
-    println!("{img}");
+    println!("{}", qr_ascii(text)?);
     Ok(())
+}
+
+/// Pure-ASCII QR art, `#` blocks and spaces only.
+fn qr_ascii(text: &str) -> Result<String> {
+    const QUIET: usize = 2;
+    let code = qrcode::QrCode::new(text.as_bytes()).context("qr encode")?;
+    let width = code.width();
+    let dark = code.to_colors();
+    let row_width = 2 * (width + 2 * QUIET);
+    let blank = " ".repeat(row_width);
+    let mut out = String::with_capacity((row_width + 1) * (width + 2 * QUIET));
+    out.push_str(&blank);
+    out.push('\n');
+    for y in 0..width + 2 * QUIET {
+        for x in 0..width + 2 * QUIET {
+            let inside = y >= QUIET && y < QUIET + width && x >= QUIET && x < QUIET + width;
+            let is_dark = inside && dark[(y - QUIET) * width + (x - QUIET)] == qrcode::Color::Dark;
+            out.push_str(if is_dark { "##" } else { "  " });
+        }
+        out.push('\n');
+    }
+    out.push_str(&blank);
+    Ok(out)
+}
+
+#[cfg(windows)]
+fn pick_files_windows() -> anyhow::Result<Vec<PathBuf>> {
+    let script = "[System.Reflection.Assembly]::LoadWithPartialName('System.windows.forms') | Out-Null; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Multiselect = $true; $f.Title = 'DropBridge — Выберите файлы для отправки'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames }";
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let paths: Vec<PathBuf> = text
+        .lines()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qr_is_pure_ascii_and_square_enough_to_scan() {
+        let art = qr_ascii("dropbridge://pair?token=abc123").unwrap();
+        assert!(
+            art.is_ascii(),
+            "a non-UTF8 console code page cannot print this"
+        );
+        let lines: Vec<&str> = art.lines().collect();
+        let modules = lines[0].len() / 2;
+        assert_eq!(
+            lines.len(),
+            modules + 2,
+            "one character row per module row, plus the quiet zone"
+        );
+        for line in &lines {
+            assert_eq!(line.len(), lines[0].len());
+            assert!(line.chars().all(|c| c == '#' || c == ' '));
+        }
+        assert!(art.contains("##"), "the code must contain dark modules");
+    }
 }

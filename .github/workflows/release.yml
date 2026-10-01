@@ -22,15 +22,47 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      # Static CRT is a hard requirement: a dynamically linked MSVC binary needs
+      # VCRUNTIME140.dll from the Visual C++ Redistributable, which is NOT part
+      # of Windows. On a clean Windows 10/11 machine the exe then dies with
+      # 0xc0000135 "VCRUNTIME140.dll not found" and the product looks broken.
+      # The flag is set here AND in .cargo/config.toml so the guarantee does not
+      # depend on the config file being present in the tree.
       - name: Build dropbridge-cli and dropbridge-tray (Release)
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: |
           cargo build --release -p dropbridge-cli -p dropbridge-tray
 
       - name: Verify Windows dist inputs exist
         shell: pwsh
         run: |
-          $missing = @('target/release/dropbridge.exe','target/release/dropbridge-tray.exe','dist/windows/install.ps1','dist/windows/uninstall.ps1','dist/windows/README.txt','dist/windows/AppxManifest.xml') | Where-Object { -not (Test-Path $_) }
+          $missing = @('target/release/dropbridge.exe','target/release/dropbridge-tray.exe','dist/windows/install.ps1','dist/windows/uninstall.ps1','dist/windows/README.txt') | Where-Object { -not (Test-Path $_) }
           if ($missing) { Write-Error "Missing files: $($missing -join ', ')"; exit 1 }
+
+      - name: Verify static CRT linkage (no VCRUNTIME140 / api-ms-win-crt imports)
+        shell: pwsh
+        run: |
+          $bad = $false
+          foreach ($exe in @('target/release/dropbridge.exe','target/release/dropbridge-tray.exe')) {
+            $bytes = [System.IO.File]::ReadAllBytes($exe)
+            $text  = [System.Text.Encoding]::ASCII.GetString($bytes)
+            foreach ($needle in @('VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','api-ms-win-crt-')) {
+              if ($text.Contains($needle)) {
+                Write-Error "$exe imports $needle -> the CRT is NOT statically linked; users without the VC++ Redistributable cannot start it."
+                $bad = $true
+              }
+            }
+            Write-Host "[ok] $exe has no dynamic CRT import"
+          }
+          if ($bad) { exit 1 }
+
+      - name: Smoke-test the engine binary
+        shell: pwsh
+        run: |
+          $out = & .\target\release\dropbridge.exe --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "dropbridge.exe --version failed with $LASTEXITCODE"; exit 1 }
+          Write-Host "[ok] engine reports: $out"
 
       - name: Package Windows 11 Distribution
         shell: pwsh
@@ -41,7 +73,6 @@ jobs:
           Copy-Item dist/windows/install.ps1 dist_pkg/
           Copy-Item dist/windows/uninstall.ps1 dist_pkg/
           Copy-Item dist/windows/README.txt dist_pkg/
-          Copy-Item dist/windows/AppxManifest.xml dist_pkg/
           Compress-Archive -Path dist_pkg/* -DestinationPath DropBridge-Windows-x64.zip
           $hash = (Get-FileHash -Algorithm SHA256 DropBridge-Windows-x64.zip).Hash.ToLower()
           "$hash  DropBridge-Windows-x64.zip" | Out-File -Encoding ascii DropBridge-Windows-x64.zip.sha256
@@ -80,6 +111,22 @@ jobs:
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
+
+      - name: Restore Android release keystore
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            echo "${ANDROID_KEYSTORE_B64}" | base64 -d > app/flutter/android/dropbridge-release.jks
+            cat > app/flutter/android/key.properties <<EOF
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          storeFile=dropbridge-release.jks
+          EOF
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 not set — APK will be signed with the DEBUG key (not for distribution)"
+          fi
 
       - name: Build Android native FFI libraries
         run: |

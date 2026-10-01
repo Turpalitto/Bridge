@@ -66,6 +66,10 @@ fn out_json(v: serde_json::Value) -> *mut c_char {
 }
 
 pub struct DbHandle {
+    inner: Arc<DbHandleInner>,
+}
+
+pub struct DbHandleInner {
     rt: Arc<Runtime>,
     node: Arc<Node>,
     events: tokio::sync::Mutex<broadcast::Receiver<NodeEvent>>,
@@ -153,13 +157,14 @@ unsafe fn init_internal(cfg_json: *const c_char, hardware_seed: Option<[u8; 32]>
         let events = tokio::sync::Mutex::new(node.events());
         let watchers = std::sync::Mutex::new(Vec::new());
         let closed = AtomicBool::new(false);
-        Ok(Box::into_raw(Box::new(DbHandle {
+        let inner = Arc::new(DbHandleInner {
             rt,
             node,
             events,
             watchers,
             closed,
-        })))
+        });
+        Ok(Box::into_raw(Box::new(DbHandle { inner })))
     });
     match res {
         Ok(Ok(h)) => h,
@@ -221,7 +226,7 @@ pub unsafe extern "C" fn Java_app_dropbridge_app_DropBridgeNative_initNodeWithKe
 
 unsafe fn with_handle<F, T>(h: *mut DbHandle, f: F) -> Option<T>
 where
-    F: FnOnce(&DbHandle) -> Result<T, String>,
+    F: FnOnce(&DbHandleInner) -> Result<T, String>,
 {
     clear_error();
     if h.is_null() {
@@ -229,11 +234,12 @@ where
         return None;
     }
     let handle = &*h;
-    if handle.closed.load(Ordering::Acquire) {
+    let inner = Arc::clone(&handle.inner);
+    if inner.closed.load(Ordering::Acquire) {
         set_error("handle is closed / shut down");
         return None;
     }
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(handle))) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&inner))) {
         Ok(Ok(v)) => Some(v),
         Ok(Err(e)) => {
             set_error(e);
@@ -615,16 +621,39 @@ pub unsafe extern "C" fn db_shutdown(h: *mut DbHandle) {
         return;
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let handle = &*h;
-        if handle.closed.swap(true, Ordering::SeqCst) {
+        let handle = Box::from_raw(h);
+        if handle.inner.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Ok(mut watchers) = handle.watchers.lock() {
+        if let Ok(mut watchers) = handle.inner.watchers.lock() {
             watchers.clear();
         }
-        handle.rt.block_on(handle.node.endpoint().close());
-        let _ = Box::from_raw(h);
+        let rt = handle.inner.rt.clone();
+        let node = handle.inner.node.clone();
+        rt.block_on(async {
+            node.close().await;
+        });
+        // handle is dropped here, freeing the outer wrapper while any active
+        // call holding inner through Arc completes cleanly without SIGSEGV.
     }));
+}
+
+/// Cancel an ongoing transfer session by session id.
+/// Returns 0 on success, -1 on error or if no active transfer matches.
+///
+/// # Safety
+/// Handle must come from [`db_init`].
+#[no_mangle]
+pub unsafe extern "C" fn db_cancel(h: *mut DbHandle, session: u64) -> c_int {
+    with_handle(h, |inner| {
+        let ok = inner.rt.block_on(inner.node.cancel_transfer(session));
+        if ok {
+            Ok(0)
+        } else {
+            Err(format!("no active transfer session {session} to cancel"))
+        }
+    })
+    .unwrap_or(-1)
 }
 
 /// Last error on this thread ("" if none). Pointer is owned by the library
@@ -686,6 +715,7 @@ mod tests {
             );
             assert!(db_sync_folders_list(std::ptr::null_mut()).is_null());
             assert!(db_event(std::ptr::null_mut(), 10).is_null());
+            assert_eq!(db_cancel(std::ptr::null_mut(), 0), -1);
             db_shutdown(std::ptr::null_mut());
             db_free_string(std::ptr::null_mut());
         }

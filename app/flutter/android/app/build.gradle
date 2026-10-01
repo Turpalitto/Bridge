@@ -26,9 +26,28 @@ android {
         versionName = flutter.versionName
     }
 
+    // Release signing: reads android/key.properties (see key.properties.example)
+    // or CI env vars; falls back to the debug key for local test builds.
+    def keystoreProperties = new Properties()
+    def keystorePropsFile = rootProject.file("key.properties")
+    if (keystorePropsFile.exists()) {
+        keystoreProperties.load(new FileInputStream(keystorePropsFile))
+    }
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            release {
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+                storeFile = file(keystoreProperties["storeFile"])
+                storePassword = keystoreProperties["storePassword"]
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            signingConfig = keystorePropsFile.exists() ? signingConfigs.release : signingConfigs.debug
             minifyEnabled = false
             shrinkResources = false
         }

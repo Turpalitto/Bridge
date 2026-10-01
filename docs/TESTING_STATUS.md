@@ -9,7 +9,9 @@ Honest ledger of what is verified and how. Updated each phase.
 | `cargo fmt` | auto-format step |
 | `cargo clippy --workspace --all-targets` | errors fail the build |
 | `cargo test --workspace` | unit + integration tests below |
-| `dropbridge-tray` cross-check | `cargo check --target x86_64-pc-windows-msvc` on Ubuntu runner — **green** |
+| Windows build of the **whole workspace** | `cargo check` + `cargo clippy -D warnings --workspace --all-targets --target x86_64-pc-windows-msvc` on a `windows-latest` runner |
+| Windows binaries actually launch | CI builds `-p dropbridge-cli -p dropbridge-tray`, runs `dropbridge.exe --version`, and asserts the tray PE subsystem is `WINDOWS_GUI` (2) |
+| Static CRT in release artifacts | the release job scans both PE files for `VCRUNTIME140*`/`MSVCP140`/`api-ms-win-crt-` imports and fails if any is present |
 | loopback benchmark | `dropbridge-bench --quick` (numbers in run summary) |
 
 CI note: this sandbox cannot compile Rust (no toolchain, crates.io
@@ -40,9 +42,12 @@ Windows HKEY types). The ledger above reflects the current pipeline.
 
 ## Verified manually / by inspection only
 
-* Windows tray UX (menu, autostart toggle, daemon supervision) — code
-  cross-compiles; needs a physical Windows machine for final sign-off.
-* DPAPI protect/unprotect — algorithm follows MSDN; needs Windows run.
+* Windows tray UX (menu opens, autostart toggle, daemon supervision,
+  log file) — compiles and is smoke-tested for launch in CI; the visual
+  result and the real autostart round-trip still need a physical machine.
+* DPAPI protect/unprotect — algorithm follows MSDN; the protector *chain*
+  (DPAPI → file fallback) is unit-tested cross-platform, but the DPAPI
+  branch itself needs a Windows run.
 * Relay under load — wrapper around iroh-relay (battle-tested upstream);
   our rate-limit flag not load-tested yet.
 
@@ -52,8 +57,10 @@ Stated plainly per project rules — these are designed but unexecuted:
 
 * **Physical Android device**: share-sheet flow, LNP permission grants,
   Keystore key generation, FCM wake. No Android SDK/emulator here.
-* **Physical Windows machine**: tray behavior, firewall prompt, toast
-  notifications, autostart. No Windows runner in this sandbox.
+* **Physical Windows machine**: firewall prompt, the actual pairing
+  round-trip from the tray, and the autostart round-trip. CI has a Windows
+  *runner*, so compile/launch are covered; a human on real hardware is
+  not. Toast notifications do not exist — they are not a pending item.
 * **True cross-NAT P2P**: CI runs loopback; hole-punch success rate relies
   on iroh's published measurements (≈90%) until we test against real NATs.
 * **Wi-Fi Direct** — intentionally deferred (ADR-WIFI-DIRECT-2026).

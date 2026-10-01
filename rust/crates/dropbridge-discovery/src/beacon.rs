@@ -159,8 +159,10 @@ pub async fn announce_loop(adv: SelfAdvertisement, mut stop: tokio::sync::watch:
 
     loop {
         tokio::select! {
-            _ = stop.changed() => {
-                if *stop.borrow() { return; }
+            res = stop.changed() => {
+                if res.is_err() || *stop.borrow() {
+                    return;
+                }
             }
             _ = ticker.tick() => {
                 let ts = now_ms();

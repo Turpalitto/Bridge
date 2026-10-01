@@ -56,6 +56,9 @@ typedef _SyncRemoveDart = int Function(Pointer<Void> h, Pointer<Utf8> path);
 typedef _ShutdownC = Void Function(Pointer<Void> h);
 typedef _ShutdownDart = void Function(Pointer<Void> h);
 
+typedef _CancelC = Int32 Function(Pointer<Void> h, Uint64 session);
+typedef _CancelDart = int Function(Pointer<Void> h, int session);
+
 typedef _LastErrorC = Pointer<Utf8> Function();
 typedef _LastErrorDart = Pointer<Utf8> Function();
 
@@ -196,6 +199,7 @@ class DropBridgeCore {
   late final _watcher = _lib.lookupFunction<_WatcherC, _WatcherDart>('db_start_watcher');
   late final _syncFolderAdd = _lib.lookupFunction<_SyncAddC, _SyncAddDart>('db_sync_folder_add');
   late final _syncFolderRemove = _lib.lookupFunction<_SyncRemoveC, _SyncRemoveDart>('db_sync_folder_remove');
+  late final _cancel = _lib.lookupFunction<_CancelC, _CancelDart>('db_cancel');
   late final _shutdown = _lib.lookupFunction<_ShutdownC, _ShutdownDart>('db_shutdown');
   late final _lastError = _lib.lookupFunction<_LastErrorC, _LastErrorDart>('db_last_error');
   late final _free = _lib.lookupFunction<_FreeC, _FreeDart>('db_free_string');
@@ -341,6 +345,16 @@ class DropBridgeCore {
     return jsonDecode(s) as Map<String, dynamic>;
   }
 
+  final List<Isolate> _activeEventWorkers = [];
+  final List<RawReceivePort> _activeEventPorts = [];
+
+  /// Cancel an ongoing transfer session.
+  Future<bool> cancel(int session) async {
+    if (_h == nullptr) return false;
+    final r = _cancel(_h, session);
+    return r == 0;
+  }
+
   /// Event stream backed by a worker isolate long-polling db_event.
   /// The isolate is killed when the stream subscription is cancelled.
   Stream<Map<String, dynamic>> events() {
@@ -350,19 +364,31 @@ class DropBridgeCore {
 
     controller = StreamController<Map<String, dynamic>>(
       onCancel: () async {
-        worker?.kill(priority: Isolate.immediate);
-        worker = null;
-        recv?.close();
+        if (worker != null) {
+          _activeEventWorkers.remove(worker);
+          worker?.kill(priority: Isolate.immediate);
+          worker = null;
+        }
+        if (recv != null) {
+          _activeEventPorts.remove(recv);
+          recv?.close();
+          recv = null;
+        }
       },
     );
 
     recv = RawReceivePort();
+    _activeEventPorts.add(recv);
     final handle = _h.address;
 
     recv.handler = (msg) {
       if (msg == null) {
         if (!controller.isClosed) controller.close();
-        recv?.close();
+        if (recv != null) {
+          _activeEventPorts.remove(recv);
+          recv?.close();
+          recv = null;
+        }
         return;
       }
       if (msg is Map && !controller.isClosed) {
@@ -373,7 +399,11 @@ class DropBridgeCore {
     // Top-level entry + sendable args only (SendPort + int).
     Isolate.spawn(_eventsEntry, [recv.sendPort, handle]).then((iso) {
       worker = iso;
-      if (controller.isClosed) iso.kill(priority: Isolate.immediate);
+      _activeEventWorkers.add(iso);
+      if (controller.isClosed) {
+        _activeEventWorkers.remove(iso);
+        iso.kill(priority: Isolate.immediate);
+      }
     }).catchError((Object e) {
       if (!controller.isClosed) controller.addError(e);
     });
@@ -382,6 +412,15 @@ class DropBridgeCore {
   }
 
   void shutdown() {
+    for (final w in _activeEventWorkers) {
+      w.kill(priority: Isolate.immediate);
+    }
+    _activeEventWorkers.clear();
+    for (final p in _activeEventPorts) {
+      p.close();
+    }
+    _activeEventPorts.clear();
+
     if (_h != nullptr) {
       _shutdown(_h);
       _h = nullptr;

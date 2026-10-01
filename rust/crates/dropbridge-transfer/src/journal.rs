@@ -286,11 +286,15 @@ impl Journal {
     fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRecord> {
         let role_str: String = row.get(2)?;
         let state_str: String = row.get(3)?;
+        // Both FromStr impls return Infallible, so these unwraps are
+        // defense-in-depth against future changes that add fallible variants.
+        let role = role_str.parse().unwrap_or(Role::Recv);
+        let state = state_str.parse().unwrap_or(TransferState::Failed);
         Ok(TransferRecord {
             id: row.get(0)?,
             peer_id: row.get(1)?,
-            role: role_str.parse().unwrap(),
-            state: state_str.parse().unwrap(),
+            role,
+            state,
             total_bytes: row.get::<_, i64>(4)? as u64,
             done_bytes: row.get::<_, i64>(5)? as u64,
             chunk_size: row.get::<_, i64>(6)? as u64,

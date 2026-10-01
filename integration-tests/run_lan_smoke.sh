@@ -23,12 +23,16 @@ head -c 65536 /dev/urandom > "$WORK/payload/sub/inner.bin"
 COMMON_RECV_ARGS=(--relay disabled)
 
 echo ">> step 1: pairing (receiver node shows QR; sender joins)"
-"$BIN" --state "$WORK/recv-state" --name smoke-laptop --kind laptop \
+"$BIN" --state "$WORK/recv-state" --name smoke-laptop --kind laptop --port 47501 \
   --receive "$WORK/recv" "${COMMON_RECV_ARGS[@]}" pair --auto-confirm \
   > "$WORK/pair.log" 2>&1 &
 PAIR_PID=$!
-sleep 3
-QR=$(grep -o 'dropbridge://[^ ]*' "$WORK/pair.log" | head -1)
+QR=""
+for _ in $(seq 1 30); do
+  QR=$(grep -o 'dropbridge://[^ ]*' "$WORK/pair.log" | head -1 || true)
+  [[ -n "$QR" ]] && break
+  sleep 0.5
+done
 if [[ -z "$QR" ]]; then echo "FAIL: no invitation"; cat "$WORK/pair.log"; exit 1; fi
 
 "$BIN" --state "$WORK/send-state" --name smoke-phone --kind phone \
@@ -40,6 +44,7 @@ for _ in $(seq 1 30); do
 done
 kill "$PAIR_PID" 2>/dev/null || true
 wait "$PAIR_PID" 2>/dev/null || true
+sleep 1
 
 echo ">> step 2: receiver daemon (same state dir -> same identity + trust)"
 "$BIN" --state "$WORK/recv-state" --name smoke-laptop --kind laptop \

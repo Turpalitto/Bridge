@@ -25,3 +25,12 @@ serde_json = { workspace = true }
 qrcode = { workspace = true }
 data-encoding = { workspace = true }
 rand = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Console control events (SetConsoleCtrlHandler) are the only way a Windows
+# process is asked to stop politely; the tray uses GenerateConsoleCtrlEvent to
+# stop the supervised daemon.
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }

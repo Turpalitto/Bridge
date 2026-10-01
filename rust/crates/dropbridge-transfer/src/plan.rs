@@ -14,6 +14,8 @@ pub enum PlanError {
     TooManyFiles(usize),
     #[error("source not found: {0:?}")]
     NotFound(PathBuf),
+    #[error("raw file descriptors are not supported on this platform (no /proc/self/fd): pass file paths instead")]
+    UnsupportedFdSource,
 }
 
 /// Raw file descriptor source (e.g. from Android ContentResolver/ParcelFileDescriptor).
@@ -75,6 +77,12 @@ pub fn build_manifest(src: &TransferSource) -> Result<(Manifest, Vec<PathBuf>), 
             }
             Ok((Manifest::new(entries), abs_paths))
         }
+        // Windows has no /proc/self/fd, and a CRT file descriptor cannot be
+        // turned back into a path without a HANDLE, so refuse loudly instead of
+        // producing a manifest that fails at the first read.
+        #[cfg(windows)]
+        TransferSource::Fds(_) => Err(PlanError::UnsupportedFdSource),
+        #[cfg(not(windows))]
         TransferSource::Fds(fds) => {
             let limit = dropbridge_protocol::limits::MAX_MANIFEST_ENTRIES;
             if fds.len() > limit {
@@ -247,6 +255,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn fd_manifest_streaming() {
         let fds = vec![
             FdSource {
@@ -268,6 +277,21 @@ mod tests {
         assert_eq!(m.entries[0].rel_path, "video.mp4");
         assert_eq!(m.entries[1].rel_path, "notes.txt");
         assert_eq!(abs.len(), 2);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn fd_manifest_is_refused_on_windows() {
+        let fds = vec![FdSource {
+            name: "a.txt".into(),
+            size: 1,
+            mtime_secs: 0,
+            fd: 3,
+        }];
+        assert!(matches!(
+            build_manifest(&TransferSource::Fds(fds)),
+            Err(PlanError::UnsupportedFdSource)
+        ));
     }
 
     #[test]

@@ -19,8 +19,15 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 zstd = { workspace = true }
-libc = "0.2"
+
+# `nix::sys::statvfs` is the Unix free-space probe; on Windows the disk probe
+# goes through `GetDiskFreeSpaceExW` instead, so neither crate is pulled into a
+# Windows build.
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

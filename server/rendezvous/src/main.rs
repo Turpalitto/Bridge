@@ -20,6 +20,7 @@ use axum::{Json, Router};
 use clap::Parser;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use tower::limit::ConcurrencyLimitLayer;
 
 const MAX_BLOB_BYTES: usize = 8 * 1024;
 const MAX_DEVICES: usize = 1_000_000;
@@ -128,19 +129,22 @@ async fn put_presence(
     if !verify_sig(&req.device, req.ts, &blob, &req.sig) {
         return (StatusCode::UNAUTHORIZED, "bad signature".to_string());
     }
-    let db = st.db.lock().unwrap();
-    let count: i64 = db
-        .query_row("SELECT COUNT(*) FROM presence", [], |r| r.get(0))
-        .unwrap_or(0);
-    if count >= MAX_DEVICES as i64 {
-        let exists: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM presence WHERE device=?1",
-                params![req.device],
-                |r| r.get(0),
-            )
+    let db = match st.db.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let exists: bool = db
+        .query_row(
+            "SELECT 1 FROM presence WHERE device=?1",
+            params![req.device],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !exists {
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM presence", [], |r| r.get(0))
             .unwrap_or(0);
-        if exists == 0 {
+        if count >= MAX_DEVICES as i64 {
             return (StatusCode::SERVICE_UNAVAILABLE, "registry full".to_string());
         }
     }
@@ -158,7 +162,10 @@ async fn get_presence(
     State(st): State<Arc<AppState>>,
     Path(device): Path<String>,
 ) -> impl IntoResponse {
-    let db = st.db.lock().unwrap();
+    let db = match st.db.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     let row: Result<(String, i64), _> = db.query_row(
         "SELECT blob, last_seen FROM presence WHERE device=?1",
         params![device],
@@ -186,7 +193,20 @@ async fn post_wake(State(st): State<Arc<AppState>>, Json(req): Json<WakeReq>) ->
     if (req.ts - now()).abs() > 300 {
         return (StatusCode::BAD_REQUEST, "timestamp skew".to_string());
     }
-    let db = st.db.lock().unwrap();
+    let db = match st.db.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM wakes WHERE recipient=?1",
+            params![req.to],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if count >= 25 {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many pending wakes".to_string());
+    }
     let _ = db.execute(
         "INSERT INTO wakes(recipient, sender, ts) VALUES (?1, ?2, ?3)",
         params![req.to, req.from, req.ts],
@@ -198,9 +218,12 @@ async fn get_wakes(
     State(st): State<Arc<AppState>>,
     Path(device): Path<String>,
 ) -> impl IntoResponse {
-    let db = st.db.lock().unwrap();
+    let db = match st.db.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     let mut stmt = match db
-        .prepare("SELECT sender, ts FROM wakes WHERE recipient=?1 AND ts > ?2 ORDER BY ts")
+        .prepare("SELECT sender, ts FROM wakes WHERE recipient=?1 AND ts > ?2 ORDER BY ts LIMIT 100")
     {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
@@ -257,11 +280,34 @@ async fn main() -> Result<()> {
     )?;
 
     let state = Arc::new(AppState { db: Mutex::new(db) });
+
+    // Periodic housekeeping: purge wakes older than 24h and presence older than 7d
+    let cleanup_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            interval.tick().await;
+            let db = match cleanup_state.db.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let cutoff_wakes = now() - 86400;
+            let cutoff_presence = now() - (7 * 86400);
+            let _ = db.execute("DELETE FROM wakes WHERE ts < ?1", params![cutoff_wakes]);
+            let _ = db.execute("DELETE FROM presence WHERE last_seen < ?1", params![cutoff_presence]);
+        }
+    });
+
     let app = Router::new()
         .route("/v1/presence", post(put_presence))
         .route("/v1/presence/{device}", get(get_presence))
         .route("/v1/wake", post(post_wake))
         .route("/v1/wake/{device}", get(get_wakes))
+        // Concurrency limit: max 50 in-flight requests.
+        // Protects the single-writer SQLite mutex from thread starvation
+        // under load. Signature verification on write endpoints already
+        // prevents unauthenticated abuse.
+        .layer(ConcurrencyLimitLayer::new(50))
         .route("/healthz", get(healthz))
         .with_state(state);
 

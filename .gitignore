@@ -6,6 +6,7 @@
 .ci-logs/
 .dart_tool/
 app/flutter/build/
+app/flutter/android/build/
 app/flutter/.dart_tool/
 app/flutter/ephemeral/
 *.log
