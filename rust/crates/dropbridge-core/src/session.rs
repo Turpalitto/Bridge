@@ -278,15 +278,33 @@ pub async fn send_files_with_session(
         }
     });
 
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    node.active_transfers.lock().await.insert(session, cancel_tx);
+
     let journal = Arc::clone(&node.journal);
-    let send_outcome = dropbridge_transfer::send::run_sender(
-        Arc::clone(&plan),
-        journal,
-        transfer_id.clone(),
-        sinks,
-        Some(ptx),
-    )
-    .await;
+    let send_outcome = tokio::select! {
+        res = dropbridge_transfer::send::run_sender(
+            Arc::clone(&plan),
+            journal,
+            transfer_id.clone(),
+            sinks,
+            Some(ptx),
+        ) => res,
+        _ = cancel_rx.changed() => {
+            conn.close(2u32.into(), b"cancelled by user");
+            node.journal
+                .set_state(&transfer_id, TransferState::Cancelled)?;
+            node.active_transfers.lock().await.remove(&session);
+            node.emit(NodeEvent::TransferCompleted {
+                session,
+                ok: false,
+                files: vec![],
+                detail: "cancelled by user".into(),
+            });
+            return Err(CoreError::Other("cancelled by user".into()));
+        }
+    };
+    node.active_transfers.lock().await.remove(&session);
     drop(progress_task);
 
     let sent = match send_outcome {
@@ -517,6 +535,9 @@ pub async fn handle_incoming_transfer(node: &Arc<Node>, conn: Connection) -> Res
         ),
     );
     let stream_count = clamp_stream_count(peer_caps.max_concurrency.min(my_caps.max_concurrency));
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    node.active_transfers.lock().await.insert(session, cancel_tx);
+
     ctrl.send_msg(&Msg::TransferAccept {
         session,
         chunk_size,
@@ -568,33 +589,50 @@ pub async fn handle_incoming_transfer(node: &Arc<Node>, conn: Connection) -> Res
     drop(progress_task);
 
     // All ingest streams must finish before expecting the Verify message.
-    for t in ingest_tasks {
-        match t.await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                node.journal
-                    .set_state(&transfer_id, TransferState::Failed)?;
-                node.emit(NodeEvent::TransferCompleted {
-                    session,
-                    ok: false,
-                    files: vec![],
-                    detail: e.to_string(),
-                });
-                let _ = ctrl
-                    .send_msg(&Msg::Complete {
-                        session,
-                        ok: false,
-                        detail: Some(e.to_string()),
-                    })
-                    .await;
-                conn.close(1u32.into(), b"recv error");
-                return Err(CoreError::Recv(e));
+    let ingest_res = tokio::select! {
+        res = async {
+            for t in ingest_tasks {
+                match t.await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(e.to_string()),
+                    Err(e) => return Err(e.to_string()),
+                }
             }
-            Err(e) => {
-                conn.close(1u32.into(), b"task panic");
-                return Err(CoreError::Other(e.to_string()));
-            }
+            Ok(())
+        } => res,
+        _ = cancel_rx.changed() => {
+            conn.close(2u32.into(), b"cancelled by user");
+            node.journal
+                .set_state(&transfer_id, TransferState::Cancelled)?;
+            node.active_transfers.lock().await.remove(&session);
+            node.emit(NodeEvent::TransferCompleted {
+                session,
+                ok: false,
+                files: vec![],
+                detail: "cancelled by user".into(),
+            });
+            return Err(CoreError::Other("cancelled by user".into()));
         }
+    };
+    node.active_transfers.lock().await.remove(&session);
+    if let Err(e) = ingest_res {
+        node.journal
+            .set_state(&transfer_id, TransferState::Failed)?;
+        node.emit(NodeEvent::TransferCompleted {
+            session,
+            ok: false,
+            files: vec![],
+            detail: e.clone(),
+        });
+        let _ = ctrl
+            .send_msg(&Msg::Complete {
+                session,
+                ok: false,
+                detail: Some(e),
+            })
+            .await;
+        conn.close(1u32.into(), b"ingest error");
+        return Err(CoreError::Other("ingest failed".into()));
     }
 
     // Wait for the Verify message now that all ingest streams are done.

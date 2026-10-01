@@ -72,6 +72,7 @@ enum Cmd {
     Daemon,
     Send {
         peer: String,
+        #[arg(num_args = 0..)]
         paths: Vec<PathBuf>,
         /// Resume a previous session id instead of starting a new one.
         #[arg(long)]
@@ -414,6 +415,23 @@ async fn main() -> Result<()> {
             paths,
             session: resume_session,
         } => {
+            let paths = if paths.is_empty() {
+                #[cfg(windows)]
+                {
+                    pick_files_windows()?
+                }
+                #[cfg(not(windows))]
+                {
+                    bail!("no paths provided; usage: dropbridge send <peer> <path>...");
+                }
+            } else {
+                paths.clone()
+            };
+            if paths.is_empty() {
+                println!("No files selected.");
+                return Ok(());
+            }
+
             let cfg = make_config(&cli);
             let node = {
                 let mut c = cfg.clone();
@@ -450,9 +468,11 @@ async fn main() -> Result<()> {
             println!("Sending {} path(s) to {}…", paths.len(), target.name);
 
             // Make sure we have a route: try discovery first (LAN-first).
-            if node.hints_for(&peer_id).await.is_none() {
-                println!("No route known yet — discovering…");
-                let _ = node.discover(Duration::from_secs(4)).await;
+            if node.hints_for(&peer_id).await.is_none()
+                || cli.relay == "disabled"
+                || cli.relay == "lan"
+            {
+                let _ = node.discover(Duration::from_secs(2)).await;
             }
 
             let mut events = node.events();
@@ -630,6 +650,22 @@ fn qr_ascii(text: &str) -> Result<String> {
     }
     out.push_str(&blank);
     Ok(out)
+}
+
+#[cfg(windows)]
+fn pick_files_windows() -> anyhow::Result<Vec<PathBuf>> {
+    let script = "[System.Reflection.Assembly]::LoadWithPartialName('System.windows.forms') | Out-Null; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Multiselect = $true; $f.Title = 'DropBridge — Выберите файлы для отправки'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames }";
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let paths: Vec<PathBuf> = text
+        .lines()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    Ok(paths)
 }
 
 #[cfg(test)]

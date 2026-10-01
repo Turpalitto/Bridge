@@ -1,0 +1,30 @@
+[Unit]
+Description=DropBridge Blind QUIC Relay Server
+Documentation=https://github.com/dropbridge/dropbridge
+After=network.target
+
+[Service]
+Type=simple
+User=dropbridge
+Group=dropbridge
+ExecStart=/usr/local/bin/dropbridge-relay --bind 127.0.0.1:8080 --metrics 127.0.0.1:9090 --rate-limit-mbps 1000
+Restart=always
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

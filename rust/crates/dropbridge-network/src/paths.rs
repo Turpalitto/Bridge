@@ -149,7 +149,7 @@ impl PathManager {
         let mut best: Option<(PathKind, f64)> = None;
         for (&kind, m) in &self.metrics {
             let s = score(kind, m);
-            if best.is_none() || s > best.unwrap().1 {
+            if best.is_none_or(|(_, best_score)| s > best_score) {
                 best = Some((kind, s));
             }
         }

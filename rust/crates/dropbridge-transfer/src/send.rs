@@ -165,7 +165,9 @@ async fn worker<S: ChunkSink + Send>(
                 .map_err(|e| TransportError::Read(e.to_string()))?;
             open_file = Some((job.file_idx, f));
         }
-        let (_, f) = open_file.as_mut().expect("opened above");
+        let (_, f) = open_file
+            .as_mut()
+            .ok_or_else(|| TransportError::Read("file handle not open".into()))?;
 
         f.seek(std::io::SeekFrom::Start(job.offset))
             .await

@@ -23,4 +23,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 data-encoding = { workspace = true }
 chrono = { workspace = true }
-iroh-base = { version = "=1.2.0" }
+iroh-base = { version = "=1.2.0", features = ["key"] }
+tower = { version = "0.5", features = ["limit"] }

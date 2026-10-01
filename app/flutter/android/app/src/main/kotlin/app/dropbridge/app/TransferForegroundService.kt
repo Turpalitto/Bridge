@@ -33,7 +33,15 @@ class TransferForegroundService : Service() {
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "Передача файлов DropBridge"
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: "Подготовка к передаче…"
                 val notification = buildProgressNotification(title, text, 0, indeterminate = true)
-                startForeground(NOTIF_ID, notification)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIF_ID,
+                        notification,
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    )
+                } else {
+                    startForeground(NOTIF_ID, notification)
+                }
             }
             ACTION_UPDATE -> {
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "Передача файлов…"

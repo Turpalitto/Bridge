@@ -45,6 +45,8 @@ pub struct Node {
     pub(crate) router: Mutex<Option<Router>>,
     pub(crate) sync_watchers: Mutex<HashMap<PathBuf, watcher::OutboxHandle>>,
     pub(crate) sync_registry: Arc<crate::sync::SyncRegistry>,
+    pub(crate) announcer: Mutex<Option<dropbridge_discovery::AnnouncerHandle>>,
+    pub(crate) active_transfers: Mutex<HashMap<u64, tokio::sync::watch::Sender<bool>>>,
     protector_name: String,
 }
 
@@ -103,6 +105,8 @@ impl Node {
             router: Mutex::new(None),
             sync_watchers: Mutex::new(HashMap::new()),
             sync_registry,
+            announcer: Mutex::new(None),
+            active_transfers: Mutex::new(HashMap::new()),
         });
 
         // Router: transfer + pairing protocols by ALPN.
@@ -144,8 +148,8 @@ impl Node {
                 pairing: false,
             };
             match dropbridge_discovery::announce(adv) {
-                Ok(_h) => {
-                    std::mem::forget(_h); // announce for process lifetime
+                Ok(h) => {
+                    *node.announcer.lock().await = Some(h);
                 }
                 Err(e) => warn!(error = %e, "LAN announcement unavailable"),
             }
@@ -191,10 +195,24 @@ impl Node {
     }
 
     pub async fn stop(&self) {
+        if let Some(announcer) = self.announcer.lock().await.take() {
+            announcer.stop().await;
+        }
         if let Some(router) = self.router.lock().await.take() {
             let _ = router.shutdown().await;
         }
         self.endpoint.close().await;
+    }
+
+    /// Cancel an active transfer session by session id.
+    /// Returns true if an active transfer was found and cancellation was signaled.
+    pub async fn cancel_transfer(&self, session: u64) -> bool {
+        if let Some(tx) = self.active_transfers.lock().await.remove(&session) {
+            let _ = tx.send(true);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn events(&self) -> broadcast::Receiver<NodeEvent> {
@@ -341,6 +359,9 @@ impl Node {
 
     /// Gracefully close the underlying network endpoint and all active sync watchers.
     pub async fn close(&self) {
+        if let Some(announcer) = self.announcer.lock().await.take() {
+            announcer.stop().await;
+        }
         let mut watchers = self.sync_watchers.lock().await;
         for (_, w) in watchers.drain() {
             w.stop();

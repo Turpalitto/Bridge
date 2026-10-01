@@ -249,13 +249,21 @@ impl ReceiverEngine {
                     .await?;
                 e.insert(file);
             }
-            let file = self.handles.get_mut(&h.file_id).expect("inserted above");
+            let Some(file) = self.handles.get_mut(&h.file_id) else {
+                return Err(RecvError::Io(std::io::Error::other(
+                    format!("missing write handle for file_id {}", h.file_id),
+                )));
+            };
             // Idempotency (spec §82): rewriting an existing range converges
             // to the same bytes; range accounting below stays correct.
             file.seek(std::io::SeekFrom::Start(h.offset)).await?;
             file.write_all(&payload).await?;
 
-            let f = self.files.get_mut(&h.file_id).expect("checked above");
+            let Some(f) = self.files.get_mut(&h.file_id) else {
+                return Err(RecvError::Io(std::io::Error::other(
+                    format!("missing file entry for file_id {}", h.file_id),
+                )));
+            };
             if !f.ranges.contains_offset(h.offset) {
                 f.ranges.add(h.offset, end);
                 journal.add_range(transfer_id, h.file_id, h.offset, end)?;

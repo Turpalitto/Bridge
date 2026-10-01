@@ -1,0 +1,34 @@
+[Unit]
+Description=DropBridge Minimal Rendezvous Server
+Documentation=https://github.com/dropbridge/dropbridge
+After=network.target
+
+[Service]
+Type=simple
+User=dropbridge
+Group=dropbridge
+ExecStart=/usr/local/bin/dropbridge-rendezvous --bind 127.0.0.1:8090 --db /var/lib/dropbridge/rendezvous.sqlite
+Restart=always
+RestartSec=5s
+
+# State directory
+StateDirectory=dropbridge
+StateDirectoryMode=0750
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

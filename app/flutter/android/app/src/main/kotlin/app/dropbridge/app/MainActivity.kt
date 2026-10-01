@@ -40,16 +40,25 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_PICK) {
-            val staged = ArrayList<String>()
-            data?.clipData?.let { clip ->
-                for (i in 0 until clip.itemCount) {
-                    stageUri(clip.getItemAt(i).uri)?.let(staged::add)
-                }
-            } ?: data?.data?.let { uri ->
-                stageUri(uri)?.let(staged::add)
-            }
-            pickCallback?.success(staged)
+            val cb = pickCallback
             pickCallback = null
+            if (resultCode != Activity.RESULT_OK || data == null) {
+                cb?.success(emptyList<String>())
+                return
+            }
+            Thread {
+                val staged = ArrayList<String>()
+                data.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        stageUri(clip.getItemAt(i).uri)?.let(staged::add)
+                    }
+                } ?: data.data?.let { uri ->
+                    stageUri(uri)?.let(staged::add)
+                }
+                runOnUiThread {
+                    cb?.success(staged)
+                }
+            }.start()
         }
     }
 
@@ -60,6 +69,7 @@ class MainActivity : FlutterActivity() {
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "pick" -> {
+                    pickCallback?.success(emptyList<String>())
                     pickCallback = result
                     val pickIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
@@ -69,9 +79,15 @@ class MainActivity : FlutterActivity() {
                     startActivityForResult(pickIntent, REQ_PICK)
                 }
                 "getHardwareKey" -> {
-                    val protector = AndroidKeyStoreProtector(this)
-                    val seed = protector.getOrCreateIdentitySeed()
-                    result.success(seed)
+                    Thread {
+                        try {
+                            val protector = AndroidKeyStoreProtector(this)
+                            val seed = protector.getOrCreateIdentitySeed()
+                            runOnUiThread { result.success(seed) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("KEYSTORE_ERROR", e.message, null) }
+                        }
+                    }.start()
                 }
                 "startForeground" -> {
                     val title = call.argument<String>("title") ?: "DropBridge"
@@ -81,12 +97,16 @@ class MainActivity : FlutterActivity() {
                         putExtra(TransferForegroundService.EXTRA_TITLE, title)
                         putExtra(TransferForegroundService.EXTRA_TEXT, text)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(null)
+                    } catch (e: Exception) {
+                        result.error("FGS_ERROR", e.message, null)
                     }
-                    result.success(null)
                 }
                 "updateForeground" -> {
                     val title = call.argument<String>("title") ?: "Передача файлов…"
@@ -156,7 +176,8 @@ class MainActivity : FlutterActivity() {
 
     /** Forward the Quick Settings tile receive-mode to Dart. */
     private fun deliverTileState(intent: Intent?) {
-        val enabled = intent?.getBooleanExtra(EXTRA_TILE_TOGGLED, false) ?: return
+        if (intent == null || !intent.hasExtra(EXTRA_TILE_TOGGLED)) return
+        val enabled = intent.getBooleanExtra(EXTRA_TILE_TOGGLED, false)
         channel.invokeMethod("receiveMode", mapOf("enabled" to enabled))
         intent.removeExtra(EXTRA_TILE_TOGGLED)
     }

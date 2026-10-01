@@ -15,30 +15,34 @@ class ShareEntryActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val staged = ArrayList<String>()
-        val dir = File(filesDir, "staged").apply { mkdirs() }
-        pruneStagedFiles(dir)
-        when (intent?.action) {
-            Intent.ACTION_SEND -> {
-                (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let {
-                    stage(it, dir)?.let(staged::add)
-                } ?: run {
-                    intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
-                        staged.add(stageText(text, dir))
+        Thread {
+            val staged = ArrayList<String>()
+            val dir = File(filesDir, "staged").apply { mkdirs() }
+            pruneStagedFiles(dir)
+            when (intent?.action) {
+                Intent.ACTION_SEND -> {
+                    (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let {
+                        stage(it, dir)?.let(staged::add)
+                    } ?: run {
+                        intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
+                            staged.add(stageText(text, dir))
+                        }
                     }
                 }
+                Intent.ACTION_SEND_MULTIPLE -> {
+                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                        ?.forEach { uri -> stage(uri, dir)?.let(staged::add) }
+                }
             }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                    ?.forEach { uri -> stage(uri, dir)?.let(staged::add) }
+            runOnUiThread {
+                val next = Intent(this, MainActivity::class.java).apply {
+                    putStringArrayListExtra(MainActivity.EXTRA_STAGED_PATHS, staged)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                startActivity(next)
+                finish()
             }
-        }
-        val next = Intent(this, MainActivity::class.java).apply {
-            putStringArrayListExtra(MainActivity.EXTRA_STAGED_PATHS, staged)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-        startActivity(next)
-        finish()
+        }.start()
     }
 
     private fun stage(uri: Uri, dir: File): String? = runCatching {
@@ -55,9 +59,15 @@ class ShareEntryActivity : Activity() {
     }.getOrNull()
 
     private fun stageText(text: String, dir: File): String {
-        val base = if (text.startsWith("http")) "link-${System.currentTimeMillis()}.url" else "note-${System.currentTimeMillis()}.txt"
+        val trimmed = text.trim()
+        val isLink = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+        val base = if (isLink) "link-${System.currentTimeMillis()}.url" else "note-${System.currentTimeMillis()}.txt"
         val out = File(dir, uniqueName(dir, base))
-        out.writeText(text)
+        if (isLink) {
+            out.writeText("[InternetShortcut]\r\nURL=$trimmed\r\n")
+        } else {
+            out.writeText(text)
+        }
         return out.absolutePath
     }
 

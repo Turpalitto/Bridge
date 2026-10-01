@@ -188,6 +188,16 @@ pub fn load_or_create(
             .map_err(|_| IdentityError::InvalidKey)?;
         return Ok((crate::DeviceIdentity::from_bytes(bytes)?, marker.to_vec()));
     }
+    // If the protector already holds a hardware/direct seed without an existing marker,
+    // use it directly instead of throwing it away for a random key on first run.
+    if let Ok(raw) = protector.unseal(b"") {
+        if let Ok(bytes) = <[u8; 32]>::try_from(raw.as_slice()) {
+            if let Ok(id) = crate::DeviceIdentity::from_bytes(bytes) {
+                let marker = protector.seal(&id.to_bytes())?;
+                return Ok((id, marker));
+            }
+        }
+    }
     let id = crate::DeviceIdentity::generate();
     let marker = protector.seal(&id.to_bytes())?;
     Ok((id, marker))
@@ -375,6 +385,24 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("windows-dpapi"), "{msg}");
         assert!(msg.contains("state directory"), "{msg}");
+    }
+
+    #[test]
+    fn direct_seed_protector_first_run_matches_seed() {
+        let seed = [42u8; 32];
+        let p = DirectSeedProtector::new(seed);
+        let (id1, marker) = load_or_create(&p, None).unwrap();
+        assert_eq!(
+            id1.to_bytes(),
+            seed,
+            "first run with hardware seed must use seed, not random key"
+        );
+        let (id2, _) = load_or_create(&p, Some(&marker)).unwrap();
+        assert_eq!(
+            id1.device_id(),
+            id2.device_id(),
+            "restart must keep identical identity"
+        );
     }
 
     #[test]
